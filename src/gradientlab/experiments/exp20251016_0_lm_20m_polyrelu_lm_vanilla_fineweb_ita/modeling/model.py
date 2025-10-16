@@ -3,7 +3,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from torch import nn
 
-from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_ita.config import (
+from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_ita.modeling.model_cfg import (
     ModelConfig,
 )
 
