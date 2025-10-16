@@ -7,7 +7,13 @@ authors = [
     { name = "Mauro Sciancalepore", email = "maurosciancalepore98@gmail.com" }
 ]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "accelerate>=1.10.1",
+    "datasets>=4.2.0",
+    "pydantic>=2.12.2",
+    "torch>=2.9.0",
+    "transformers>=4.57.1",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.3,<0.10.0"]
