@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from transformers import Cache
 
 from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_ita.modeling.attention import (
     Attention,
@@ -8,7 +9,7 @@ from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_it
     ModelConfig,
 )
 from gradientlab.neuralblocks.ffn.polynorm import PolyNormFeedForward
-from gradientlab.neuralblocks.model_types import AttnMask, Block_KVCache, Model_KVCache
+from gradientlab.neuralblocks.model_types import AttnMask
 from gradientlab.neuralblocks.norm_layers.rmsnorm import RMSNorm
 
 
@@ -23,13 +24,13 @@ class TransformerEncoderBlock(nn.Module):
         self.self_attn = Attention(
             in_hidden_dim=cfg.hidden_dim,
             hidden_dim=hidden_dim,
-            dropout=cfg.enc_dropout,
+            dropout=cfg.dropout,
             num_heads=cfg.num_heads,
             use_bias=cfg.use_bias,
         )
         self.ffn = PolyNormFeedForward(
             cfg.hidden_dim,
-            dropout=cfg.enc_dropout,
+            dropout=cfg.dropout,
             mult=ffn_mult,
             use_bias=cfg.use_bias,
         )
@@ -38,7 +39,7 @@ class TransformerEncoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         attn_mask: AttnMask,
-        kv_cache: Block_KVCache,
+        kv_cache: Cache,
         is_causal: bool,
         use_cache: bool,
     ):
@@ -71,12 +72,12 @@ class TransformerEncoder(nn.Module):
                 TransformerEncoderBlock(
                     cfg,
                     hidden_dim=int(cfg.hidden_dim * cfg.hidden_squeeze_ratio)
-                    if (i >= cfg.enc_num_layers // 3 and i % 2 == 0)
-                    and (i != cfg.enc_num_layers - 1)
+                    if (i >= cfg.num_layers // 3 and i % 2 == 0)
+                    and (i != cfg.num_layers - 1)
                     else cfg.hidden_dim,
                     ffn_mult=cfg.ffn_mult,
                 )
-                for i in range(cfg.enc_num_layers)
+                for i in range(cfg.num_layers)
             ]
         )
         self.norm_out = RMSNorm(cfg.hidden_dim)
@@ -84,7 +85,7 @@ class TransformerEncoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        kv_cache: Model_KVCache,
+        kv_cache: Cache,
         attn_mask: AttnMask = None,
         use_cache: bool = False,
         is_causal: bool = False,
@@ -92,9 +93,6 @@ class TransformerEncoder(nn.Module):
         for i, block in enumerate(self.blocks):
             block_cache = None if not use_cache else kv_cache[i]
 
-            """ if self.training:
-                x, _ = checkpoint(block, x, attn_mask, block_cache, is_causal, use_cache, use_reentrant=False)
-            else: """
             x, block_cache = block(
                 x,
                 attn_mask=attn_mask,
@@ -103,6 +101,6 @@ class TransformerEncoder(nn.Module):
                 use_cache=use_cache,
             )
             if use_cache:
-                kv_cache[i] = block_cache
+                kv_cache.update(block_cache[0], block_cache[1], i)
         x = self.norm_out(x)
         return x, kv_cache

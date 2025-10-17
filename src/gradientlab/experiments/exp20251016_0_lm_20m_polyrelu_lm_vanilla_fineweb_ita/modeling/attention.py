@@ -109,10 +109,11 @@ class Attention(nn.Module):
         # 2) K/V with optional cache + GQA/MQA shapes
         if use_cache:
             if kv_cache is None:
-                kv_cache = {}
-
-            cached_k = kv_cache.get("k")
-            cached_v = kv_cache.get("v")
+                cached_k = None
+                cached_v = None
+            else:
+                cached_k = kv_cache[0]
+                cached_v = kv_cache[1]
 
             k_new = self._reshape_k(self.k(in_k), B, L_KV)  # [B, G, L_KV, qk_head_dim]
             v_new = self._reshape_v(self.v(in_v), B, L_KV)  # [B, G, L_KV, v_head_dim]
@@ -123,8 +124,7 @@ class Attention(nn.Module):
             else:
                 k_g, v_g = k_new, v_new
 
-            kv_cache["k"] = k_g
-            kv_cache["v"] = v_g
+            kv_cache = (k_new, v_new)
         else:
             k_g = self._reshape_k(self.k(in_k), B, L_KV)
             v_g = self._reshape_v(self.v(in_v), B, L_KV)
@@ -138,6 +138,7 @@ class Attention(nn.Module):
             k = k_g.repeat_interleave(self.heads_per_kv_group, dim=1)
             v = v_g.repeat_interleave(self.heads_per_kv_group, dim=1)
 
+        # print(f"{q.shape=} {k.shape=} {v.shape=}")
         # 4) SDPA (PyTorch allows V to have a different head dim than Q/K)
         x = F.scaled_dot_product_attention(
             q,  # [B, H, L_Q, qk_head_dim]

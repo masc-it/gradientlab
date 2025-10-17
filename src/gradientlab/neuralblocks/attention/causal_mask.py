@@ -36,3 +36,15 @@ def make_bool_causal_mask(
     # Final boolean mask: True=allow, False=mask
     attn_mask = key_allow & causal_allow  # [B,1,T,T]
     return attn_mask
+
+
+def build_causal_mask_4d(q_len: int, past_len: int, device):
+    # Boolean mask where True = *masked* for SDPA
+    # Keys are indexed [0 .. past_len + q_len - 1]
+    k_len = past_len + q_len
+    i = torch.arange(q_len, device=device).unsqueeze(-1)  # [q,1]
+    j = torch.arange(k_len, device=device).unsqueeze(0)  # [1,k]
+    # allow keys j <= past_len + i
+    causal_mask = j > (past_len + i)  # [q,k], True means block
+    # SDPA expects broadcastable [B or 1, H or 1, q, k]
+    return causal_mask.view(1, 1, q_len, k_len)
