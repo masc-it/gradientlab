@@ -51,7 +51,8 @@ class Trainer:
         self.exp_cfg = exp_cfg
 
         self.device = torch.device(exp_cfg.device)
-
+        self.model.to(self.device)
+        
         self.epoch_current = 0
         self.step_current = 0
         # self._resume_state() TODO
