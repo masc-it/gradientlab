@@ -5,21 +5,22 @@ from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_it
     GPTForCausalLM,
 )
 from gradientlab.tokenizers.qwen_tokenizer import qwen3_tokenizer
+from gradientlab.tokenizers.byte_tokenizer import byte_tokenizer
 
 
 class GPTFactory:
     @staticmethod
     def build_20m():
-        tokenizer = qwen3_tokenizer()
+        tokenizer = byte_tokenizer()
         cfg = ModelConfig(
             dropout=0.05,
             attn_dropout=0.0,
-            vocab_size=tokenizer.vocab_size + 1,
+            vocab_size=tokenizer.total_vocab_size,  # + 1,
             pad_token_id=tokenizer.pad_token_id,  # type: ignore
             bos_token_id=tokenizer.convert_tokens_to_ids("<|im_start|>"),  # type: ignore
             eos_token_id=tokenizer.convert_tokens_to_ids("<|im_end|>"),  # type: ignore
             embed_dim=32,
-            num_layers=5,
+            num_layers=22,
             hidden_dim=256,
             ffn_mult=4.0,
             hidden_squeeze_ratio=0.5,

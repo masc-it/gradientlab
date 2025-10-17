@@ -64,6 +64,7 @@ class Trainer:
     def train(
         self,
     ):
+        trackio.init(project=self.exp_cfg.project_name, name=self.exp_cfg.exp_name)
         for epoch in range(self.exp_cfg.num_epochs):
             self.train_one_epoch(epoch)
             self.epoch_current += 1
@@ -71,7 +72,9 @@ class Trainer:
     def train_one_epoch(self, epoch_idx: int):
         self.model.train()
         pbar = tqdm(
-            self.dl_train, desc=f"Epoch {epoch_idx + 1}/{self.exp_cfg.num_epochs}"
+            self.dl_train,
+            desc=f"Epoch {epoch_idx + 1}/{self.exp_cfg.num_epochs}",
+            dynamic_ncols=True,
         )
 
         for i, input_ids in enumerate(pbar, start=1):
@@ -83,8 +86,7 @@ class Trainer:
                 enabled=self.is_mixed_precision_on,
             ):
                 output = self.model(
-                    input_ids,
-                    target_ids=input_ids.clone(),
+                    input_ids, labels=input_ids.clone(), use_cache=False
                 )
                 loss = output.loss
 
@@ -96,7 +98,7 @@ class Trainer:
             self.scheduler.step()
             self.step_current += 1
 
-            if i % 10 == 0:
+            if i % self.exp_cfg.log_steps == 0:
                 metrics = {
                     "loss": f"{loss.detach():.4f}",
                     "norm": f"{norm_pre_clip.item():.2f}",
@@ -115,7 +117,8 @@ class Trainer:
                     | {f"train_{k}": float(v) for k, v in metrics.items()},
                 )
 
-            if i % 1000 == 0:
+            if i % self.exp_cfg.save_steps == 0:
+                self._generate()
                 self._save_state()
 
     def _build_dataloaders(self):
@@ -190,3 +193,18 @@ class Trainer:
                 indent=2,
             )
         )
+
+    def _generate(self):
+        was_model_training = self.model.training
+
+        inputs = self.tokenizer(["Ciao sono Mauro e "], return_tensors="pt")
+        self.model.eval()
+        preds = self.model.generate(
+            **inputs,
+            max_length=40,
+            do_sample=False,
+        )
+        print(self.tokenizer.decode(preds[0]))
+
+        if was_model_training:
+            self.model.train()
