@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 from torch import nn
 from transformers import Cache
@@ -39,27 +40,29 @@ class TransformerEncoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         attn_mask: AttnMask,
-        kv_cache: Cache,
+        kv_cache: Optional[Cache],
+        layer_idx: int,
         is_causal: bool,
         use_cache: bool,
     ):
         u = self.norm(x)
 
         # parallel branches
-        x_attn, kv_cache = self.self_attn(
+        x_attn = self.self_attn(
             u,
             u,
             u,
             attn_mask=attn_mask,
             is_causal=is_causal,
             kv_cache=kv_cache,
+            layer_idx=layer_idx,
             use_cache=use_cache,
         )
         x_ffn = self.ffn(u)
 
         # single residual add (PaLM style)
         x = x + (x_attn + x_ffn)
-        return x, kv_cache
+        return x
 
 
 class TransformerEncoder(nn.Module):
@@ -85,22 +88,19 @@ class TransformerEncoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        kv_cache: Cache,
+        kv_cache: Optional[Cache] = None,
         attn_mask: AttnMask = None,
         use_cache: bool = False,
         is_causal: bool = False,
     ):
         for i, block in enumerate(self.blocks):
-            block_cache = None if not use_cache else kv_cache[i]
-
-            x, block_cache = block(
+            x = block(
                 x,
                 attn_mask=attn_mask,
-                kv_cache=block_cache,
+                kv_cache=kv_cache,
+                layer_idx=i,
                 is_causal=is_causal,
                 use_cache=use_cache,
             )
-            if use_cache:
-                kv_cache.update(block_cache[0], block_cache[1], i)
         x = self.norm_out(x)
         return x, kv_cache

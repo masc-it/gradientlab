@@ -13,10 +13,9 @@ from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_it
 
 import torch.nn.functional as F
 
-from transformers import GenerationMixin, PreTrainedModel
+from transformers import GenerationMixin, PreTrainedModel, AutoModelForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.cache_utils import Cache, DynamicCache
-
 
 class PositionalEncoding(nn.Module):
     """Default positional encoding."""
@@ -125,7 +124,7 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
 
         # Offset PE by cache length
         cache_len = 0
-        if cache_in is not None:
+        if use_cache:
             cache_len = cache_in.get_seq_length()
 
         # print(f"{Q_LEN=}")
@@ -178,3 +177,5 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
             ):
                 with torch.no_grad():
                     p.mul_(scale)
+
+AutoModelForCausalLM.register(ModelConfig, GPTForCausalLM)

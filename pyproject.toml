@@ -10,9 +10,11 @@ requires-python = ">=3.11"
 dependencies = [
     "accelerate>=1.10.1",
     "datasets>=4.2.0",
-    "pydantic>=2.12.2",
+    "ipykernel>=7.0.1",
+    "pydantic<2.12",
+    "setuptools>=80.9.0",
     "torch>=2.9.0",
-    "trackio>=0.0.6",
+    "trackio>=0.6.0",
     "transformers>=4.57.1",
 ]
 

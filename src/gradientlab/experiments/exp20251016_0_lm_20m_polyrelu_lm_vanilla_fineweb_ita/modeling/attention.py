@@ -2,8 +2,9 @@ from typing import Optional
 import torch
 from torch import nn
 import torch.nn.functional as F
+from transformers import Cache
 
-from gradientlab.neuralblocks.model_types import AttnMask, Block_KVCache
+from gradientlab.neuralblocks.model_types import AttnMask
 
 
 class Attention(nn.Module):
@@ -18,8 +19,7 @@ class Attention(nn.Module):
         v_ratio: float = 2.0,  # can be 1.0–2.0 to expand V head dim
         num_kv_groups: Optional[
             int
-        ] = 2,  # =1 -> MQA, <num_heads> -> GQA, =num_heads -> classic MHA
-        learnable_temperature: bool = True,  # extra per-layer temperature on Q (in addition to SDPA's scaling)
+        ] = 2,  # =1 -> MQA, < num_heads -> GQA, =num_heads -> classic MHA
         qk_init_scale: float = 0.5,  # downscale Q/K init std to stabilize squeezed logits
     ) -> None:
         super().__init__()
@@ -62,16 +62,16 @@ class Attention(nn.Module):
             self.in_hidden_dim, self.num_kv_groups * self.v_head_dim, bias=use_bias
         )
 
+        self.gate_proj = nn.Linear(
+            self.in_hidden_dim, 
+            self.num_heads * self.v_head_dim, 
+            bias=False
+        )
         # Output projection expects concatenated V of size (num_heads * v_head_dim)
         self.out_proj = nn.Linear(
             self.num_heads * self.v_head_dim, self.in_hidden_dim, bias=use_bias
         )
 
-        # Optional learnable extra temperature on Q (SDPA already scales by 1/sqrt(dk))
-        if learnable_temperature:
-            self.q_extra_scale = nn.Parameter(torch.ones(1))  # starts at 1.0
-        else:
-            self.register_parameter("q_extra_scale", None)
 
         self._init_weights(qk_init_scale=qk_init_scale)
 
@@ -92,67 +92,56 @@ class Attention(nn.Module):
         in_v: torch.Tensor,
         attn_mask: AttnMask,
         is_causal: bool,
-        kv_cache: Block_KVCache,
+        kv_cache: Cache,
+        layer_idx: int,
         use_cache: bool = False,
     ):
         B, L_Q, D = in_q.size()
         _, L_KV, D = in_k.size()
 
-        # 1) Project Q and reshape to heads
         q = self.q(in_q)
-        if self.q_extra_scale is not None:
-            q = (
-                q * self.q_extra_scale
-            )  # extra learned temperature (on top of SDPA's internal scaling)
         q = self._reshape_q(q, B, L_Q)  # [B, H, L_Q, qk_head_dim]
 
-        # 2) K/V with optional cache + GQA/MQA shapes
+        k = self._reshape_k(self.k(in_k), B, L_KV)  # [B, G, L_KV, qk_head_dim]
+        v = self._reshape_v(self.v(in_v), B, L_KV)  # [B, G, L_KV, v_head_dim]
+
         if use_cache:
-            if kv_cache is None:
-                cached_k = None
-                cached_v = None
-            else:
-                cached_k = kv_cache[0]
-                cached_v = kv_cache[1]
-
-            k_new = self._reshape_k(self.k(in_k), B, L_KV)  # [B, G, L_KV, qk_head_dim]
-            v_new = self._reshape_v(self.v(in_v), B, L_KV)  # [B, G, L_KV, v_head_dim]
-
-            if cached_k is not None and cached_v is not None:
-                k_g = torch.cat([cached_k, k_new], dim=2)  # concat on sequence
-                v_g = torch.cat([cached_v, v_new], dim=2)
-            else:
-                k_g, v_g = k_new, v_new
-
-            kv_cache = (k_new, v_new)
-        else:
-            k_g = self._reshape_k(self.k(in_k), B, L_KV)
-            v_g = self._reshape_v(self.v(in_v), B, L_KV)
+            k, v = kv_cache.update(k, v, layer_idx)
 
         # 3) Expand K/V groups to per-head tensors (repeat per group)
         #    q: [B, H, L_Q, qk_d], k_g/v_g: [B, G, L_KV, *], expand -> [B, H, L_KV, *]
-        if self.num_kv_groups == self.num_heads:
-            k = k_g
-            v = v_g
-        else:
-            k = k_g.repeat_interleave(self.heads_per_kv_group, dim=1)
-            v = v_g.repeat_interleave(self.heads_per_kv_group, dim=1)
+        if self.num_kv_groups != self.num_heads:
+            k = k.repeat_interleave(self.heads_per_kv_group, dim=1)
+            v = v.repeat_interleave(self.heads_per_kv_group, dim=1)
 
         # print(f"{q.shape=} {k.shape=} {v.shape=}")
-        # 4) SDPA (PyTorch allows V to have a different head dim than Q/K)
         x = F.scaled_dot_product_attention(
-            q,  # [B, H, L_Q, qk_head_dim]
-            k,  # [B, H, L_KV, qk_head_dim]
-            v,  # [B, H, L_KV, v_head_dim]  (note: can differ)
+            q,
+            k,
+            v,
             attn_mask=attn_mask,
             is_causal=is_causal,
-            dropout_p=0.0,  # self.dropout if self.training else 0.0,
+            dropout_p=0.0,
         )  # -> [B, H, L_Q, v_head_dim]
 
+        # Gated Attention for Large Language Models: Non-linearity, Sparsity, and Attention-Sink-Free
+        # https://arxiv.org/abs/2505.06708
+        gate_scores = torch.sigmoid(
+            self.gate_proj(in_q)
+        )  # [B, L_Q, num_heads * v_head_dim]
+        
+        # Reshape gate scores to match SDPA output: [B, num_heads, L_Q, v_head_dim]
+        gate_scores = gate_scores.view(
+            B, L_Q, self.num_heads, self.v_head_dim
+        ).transpose(1, 2)
+        
+        # Apply multiplicative gating element-wise
+        x = x * gate_scores  # [B, H, L_Q, v_head_dim]
+        
         # 5) Merge heads and project out
         x = x.transpose(1, 2).reshape(B, L_Q, self.num_heads * self.v_head_dim)
         x = self.out_proj(x)
-        return x, kv_cache
+        return x
 
     # ---------- shape helpers ----------
     def _reshape_q(self, x: torch.Tensor, B: int, L: int):

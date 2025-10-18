@@ -1,4 +1,5 @@
 import json
+import sys
 
 from transformers import GenerationConfig
 from gradientlab.experiments.exp20251016_0_lm_20m_polyrelu_lm_vanilla_fineweb_ita.exp_config import (
@@ -24,7 +25,7 @@ if __name__ == "__main__":
     print("\n" + exp_cfg.model_dump_json(indent=2))
 
     if DEBUG_GEN:
-        inputs = tokenizer(["ciaooo come va"], return_tensors="pt")
+        inputs = tokenizer(["<|im_start|>ciaooo come va"], return_tensors="pt", add_special_tokens=False)
         print(inputs)
         model.eval()
         preds = model.generate(
@@ -35,6 +36,7 @@ if __name__ == "__main__":
         )
         print(preds)
         print(tokenizer.decode(preds[0]))
+        sys.exit(0)
 
     trainer = Trainer(model, tokenizer, model_cfg, exp_cfg)
     try:

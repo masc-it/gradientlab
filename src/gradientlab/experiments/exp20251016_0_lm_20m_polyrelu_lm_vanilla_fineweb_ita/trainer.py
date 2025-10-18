@@ -52,7 +52,7 @@ class Trainer:
 
         self.device = torch.device(exp_cfg.device)
         self.model.to(self.device)
-        
+
         self.epoch_current = 0
         self.step_current = 0
         # self._resume_state() TODO
@@ -65,7 +65,7 @@ class Trainer:
     def train(
         self,
     ):
-        trackio.init(project=self.exp_cfg.project_name, name=self.exp_cfg.exp_name)
+        trackio.init(project=self.exp_cfg.exp_name)
         for epoch in range(self.exp_cfg.num_epochs):
             self.train_one_epoch(epoch)
             self.epoch_current += 1
@@ -198,7 +198,8 @@ class Trainer:
     def _generate(self):
         was_model_training = self.model.training
 
-        inputs = self.tokenizer(["Ciao sono Mauro e "], return_tensors="pt")
+        inputs = self.tokenizer(["<|im_start|>Ciao sono Mauro e "], return_tensors="pt", add_special_tokens=False)
+        inputs = {k: v.to(self.device) for k,v in inputs.items()}
         self.model.eval()
         preds = self.model.generate(
             **inputs,

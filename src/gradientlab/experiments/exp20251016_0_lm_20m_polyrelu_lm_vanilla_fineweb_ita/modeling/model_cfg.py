@@ -1,4 +1,4 @@
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, AutoConfig
 
 
 class ModelConfig(PretrainedConfig):
@@ -22,17 +22,19 @@ class ModelConfig(PretrainedConfig):
         num_kv_groups: int = 2,
         ffn_mult: int = 4,
         tie_word_embeddings: bool = True,
+        **kwargs
     ):
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
             eos_token_id=eos_token_id,
             tie_word_embeddings=tie_word_embeddings,
-            num_hidden_layers=num_layers,
             max_length=max_length,
+            **kwargs
         )
 
         self.num_layers = num_layers
+        self.num_hidden_layers = num_layers
         self.dropout = dropout
         self.attn_dropout = attn_dropout
         self.vocab_size = vocab_size
@@ -48,3 +50,5 @@ class ModelConfig(PretrainedConfig):
         self.num_kv_groups = num_kv_groups
         self.ffn_mult = ffn_mult
         self.tie_word_embeddings = tie_word_embeddings
+
+AutoConfig.register(ModelConfig.model_type, ModelConfig)

@@ -15,7 +15,7 @@ class GPTFactory:
         cfg = ModelConfig(
             dropout=0.05,
             attn_dropout=0.0,
-            vocab_size=tokenizer.total_vocab_size,  # + 1,
+            vocab_size=tokenizer.total_vocab_size,
             pad_token_id=tokenizer.pad_token_id,  # type: ignore
             bos_token_id=tokenizer.convert_tokens_to_ids("<|im_start|>"),  # type: ignore
             eos_token_id=tokenizer.convert_tokens_to_ids("<|im_end|>"),  # type: ignore

@@ -27,7 +27,7 @@ class ExpConfig(BaseModel):
     max_lr: float = 6e-4
     warmup_ratio: float = 0.03
     num_workers: int = 4
-    weight_decay: float = 1e-3
+    weight_decay: float = 1e-2
     resume_from: Optional[str] = None
     log_steps: int = 10
     save_steps: int = 1000
