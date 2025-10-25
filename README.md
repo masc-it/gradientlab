@@ -7,7 +7,7 @@ A lab where gradients flow and models go to prod.
 - Experiment as a first-class citizen
     - full replicability: dataprep, modeling, configs, training and eval code is self-contained
 - Architecture copy-paste is allowed, no preemptive optimization when doing applied AI
-    - If you're reusing an exact same nn.Module *N* times, go modularize it.
+    - Still, we're not savages: If you're reusing an exact same nn.Module *N* times, go modularize it.
     - For me N=3 means that the thing works => refactor.
 - Cristalize a stable architecture or nn.Module under `neuralblocks/`
     - Avoid model overparametrization and huge configs
