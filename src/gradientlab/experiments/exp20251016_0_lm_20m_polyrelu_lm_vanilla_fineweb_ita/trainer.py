@@ -26,6 +26,7 @@ from gradientlab.neuralblocks.optim.adamw_params import get_adamw_parameters
 from gradientlab.neuralblocks.schedulers.cosine_with_warmup import (
     get_cosine_scheduler_with_warmup,
 )
+from gradientlab.training_utils.hf_save import hf_add_custom_model_metadata
 
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision("high")
@@ -125,6 +126,7 @@ class Trainer:
     def _build_dataloaders(self):
         self.dl_train = self._build_dataloader("train")
         self.dl_len = len(self.dl_train)
+        # TODO val
 
     def _build_dataloader(self, split_name: str):
         torch_ds = self._load_dataset(split_name)
@@ -178,8 +180,10 @@ class Trainer:
 
     def _save_state(self):
         exp_dir = self.exp_cfg.exp_dir
-        self.model.save_pretrained(exp_dir / "model")
-        self.tokenizer.save_pretrained(exp_dir / "model")
+        hf_save_dir = exp_dir / "model"
+        self.model.save_pretrained(hf_save_dir)
+        self.tokenizer.save_pretrained(hf_save_dir)
+        hf_add_custom_model_metadata(hf_save_dir, self.exp_cfg.exp_name, self.model, self.model_cfg)
 
         torch.save(self.optimizer.state_dict(), exp_dir / "optim.pt")
         torch.save(self.scaler.state_dict(), self.exp_cfg.exp_dir / "scaler.pt")
