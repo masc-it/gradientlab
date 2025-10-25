@@ -1,0 +1,13 @@
+A custom 22-layers, yet only 20M param GPT:
+- PolyReLU ffn activation (works better than SwiGLU)
+- parallel attention (from PaLM paper & Moondream)
+- squeeze-and-excite narrow transformer backbone (an idea of mine for small lang models, prefering depth over width, inspired by computer vision)
+- sigmoid gating post sdpa ([paper by Qwen team](https://arxiv.org/abs/2505.06708))
+- attn values heads expansion
+- absolute position embeddings (I know)
+- KV-cache support
+- embed_dim != hidden_dim
+- Trained on 3B italian tokens from fineweb2 in ~8 hours on a RTXA4000.
+    - byte_level_tokenizer, couldn't use qwen3 tokenizer due to memory constraints (gpu poor) and weird torch.compile errors
+- Slim notebook to demo model loading and generation.
+- single-GPU trainer with trackio to track metrics
