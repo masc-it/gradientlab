@@ -15,13 +15,14 @@ A lab where gradients flow and models go to prod.
     - we don't do whitepapers, we push to prod ASAP
 - Notebooks as a clean demo interface
     - do dirty & temporary stuff under `notebooks/trash`
-
+- ...
 
 # Install
 
 ## prereqs
 
-uv:
+- A linux box with CUDA or apple silicon.
+- uv:
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
@@ -42,8 +43,25 @@ uv add gradientlab
 
 # Experiments
 
-An example is under `/experiments`, with a custom small 20M param GPT under `/modeling` with PolyReLU ffn activation, parallel attention (from PaLM paper & Moondream), absolute position embeddings and KV-cache. + Slim notebook to demo model loading and generation.
+An example is under `/experiments`, a custom 22-layers yet only 20M param GPT, which you can find under `/modeling`:
+- PolyReLU ffn activation (works better than SwiGLU)
+- parallel attention (from PaLM paper & Moondream)
+- squeeze-and-excite narrow transformer backbone (an idea of mine for small lang models, prefering depth over width, inspired by computer vision)
+- sigmoid gating post sdpa ([paper by Qwen team](https://arxiv.org/abs/2505.06708))
+- attn values heads expansion
+- absolute position embeddings (I know)
+- KV-cache support
+- Trained on 3B italian tokens from fineweb2 in ~8 hours on a RTXA4000.
+    - byte_level_tokenizer, couldn't use qwen3 tokenizer due to memory constraints (gpu poor) and weird torch.compile errors
+- Slim notebook to demo model loading and generation.
 
 
 # Publish
-If you want to publish ...
+If you want to publish your own gradientlab-* project as library, just create a PyPI token and follow the official uv [guide](https://docs.astral.sh/uv/guides/package/).
+
+Generally as simple as:
+
+```
+uv build
+UV_PUBLISH_TOKEN=pypi-your-token uv publish
+```
