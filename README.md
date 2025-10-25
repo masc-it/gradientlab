@@ -59,7 +59,7 @@ An example is under `/experiments`, a custom 22-layers yet only 20M param GPT, w
 
 
 # Publish
-If you want to publish your own gradientlab-* project as library, just create a PyPI token and follow the official uv [guide](https://docs.astral.sh/uv/guides/package/).
+If you want to publish your own `gradientlab-*` project as library, just create a PyPI token and follow the official uv [guide](https://docs.astral.sh/uv/guides/package/).
 
 Generally as simple as:
 
