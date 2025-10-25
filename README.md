@@ -22,6 +22,7 @@ A lab where gradients flow and models go to prod.
 ## prereqs
 
 - A linux box with CUDA or apple silicon.
+    - Rocm may work as well, not tested
 - uv:
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -54,6 +55,7 @@ An example is under `/experiments`, a custom 22-layers yet only 20M param GPT, w
 - Trained on 3B italian tokens from fineweb2 in ~8 hours on a RTXA4000.
     - byte_level_tokenizer, couldn't use qwen3 tokenizer due to memory constraints (gpu poor) and weird torch.compile errors
 - Slim notebook to demo model loading and generation.
+- single-GPU trainer with trackio to track metrics
 
 
 # Publish

@@ -1,6 +1,6 @@
 [project]
 name = "gradientlab"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lab where gradients flow and models go to prod."
 readme = "README.md"
 authors = [
