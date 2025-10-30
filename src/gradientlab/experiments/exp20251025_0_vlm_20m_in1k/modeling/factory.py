@@ -2,9 +2,8 @@ from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.modeling.model_cfg impor
     ModelConfig,
 )
 from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.modeling.model import (
-    GPTForCausalLM,
+    GPTVForCausalLM,
 )
-from gradientlab.tokenizers.qwen_tokenizer import qwen3_tokenizer
 from gradientlab.tokenizers.byte_tokenizer import byte_tokenizer
 
 
@@ -19,9 +18,10 @@ class GPTFactory:
             pad_token_id=tokenizer.pad_token_id,  # type: ignore
             bos_token_id=tokenizer.convert_tokens_to_ids("<|im_start|>"),  # type: ignore
             eos_token_id=tokenizer.convert_tokens_to_ids("<|im_end|>"),  # type: ignore
-            embed_dim=32,
+            embed_dim=256,
             num_layers=22,
             hidden_dim=256,
+            patch_size=16,
             ffn_mult=4.0,
             hidden_squeeze_ratio=0.5,
             num_heads=4,
@@ -31,5 +31,5 @@ class GPTFactory:
             tie_word_embeddings=False,
         )
 
-        model = GPTForCausalLM(cfg)
+        model = GPTVForCausalLM(cfg)
         return model, tokenizer, cfg

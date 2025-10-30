@@ -7,20 +7,21 @@ class ModelConfig(PretrainedConfig):
     def __init__(
         self,
         num_layers: int = 16,
+        patch_size: int = 16,
         dropout: float = 0.05,
         attn_dropout: float = 0.0,
         vocab_size: int = 512,
         bos_token_id: int = 0,
         pad_token_id: int = 1,
         eos_token_id: int = 2,
-        embed_dim: int = 64,
+        embed_dim: int = 256,
         hidden_dim: int = 256,
         hidden_squeeze_ratio: float = 0.5,
         max_length: int = 4096,
         use_bias: bool = True,
         num_heads: int = 4,
         num_kv_groups: int = 2,
-        ffn_mult: int = 4,
+        ffn_mult: float = 4.0,
         tie_word_embeddings: bool = True,
         **kwargs
     ):
@@ -35,6 +36,7 @@ class ModelConfig(PretrainedConfig):
 
         self.num_layers = num_layers
         self.num_hidden_layers = num_layers
+        self.patch_size = patch_size
         self.dropout = dropout
         self.attn_dropout = attn_dropout
         self.vocab_size = vocab_size

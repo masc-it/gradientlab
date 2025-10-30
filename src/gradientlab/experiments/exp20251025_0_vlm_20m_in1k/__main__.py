@@ -1,6 +1,7 @@
 import json
 import sys
 
+import torch
 from transformers import GenerationConfig
 from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.exp_config import (
     ExpConfig,
@@ -26,10 +27,13 @@ if __name__ == "__main__":
 
     if DEBUG_GEN:
         inputs = tokenizer(["<|im_start|>ciaooo come va"], return_tensors="pt", add_special_tokens=False)
+        pixel_values = torch.ones((1, 3, 64, 64))
+        inputs["pixel_values"] = pixel_values
+
         print(inputs)
         model.eval()
         preds = model.generate(
-            **inputs,
+            **inputs, # type: ignore
             generation_config=GenerationConfig(),
             max_length=20,
             do_sample=False,

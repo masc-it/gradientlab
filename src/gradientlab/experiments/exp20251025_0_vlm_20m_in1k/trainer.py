@@ -1,32 +1,34 @@
 import json
+from pathlib import Path
 import sys
-
+from datasets import Dataset
 from tqdm import tqdm
 import trackio
-from transformers import Qwen2TokenizerFast
-from gradientlab.data_utils.torch_datasets.tokenized_text_ds import (
-    PreTokenizedTextDataset,
-)
+
 from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.exp_config import (
     ExpConfig,
 )
 from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.modeling.model import (
-    GPTForCausalLM,
+    GPTVForCausalLM,
 )
 from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.modeling.model_cfg import (
     ModelConfig,
 )
-from datasets import load_from_disk
+from datasets import load_from_disk, load_dataset
 from torch.utils.data import DataLoader
 import torch
 import random
 import numpy as np
 from torch.optim.adamw import AdamW
+from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.torch_dataset import IN1KDataset, VLMCollate
 from gradientlab.neuralblocks.optim.adamw_params import get_adamw_parameters
 from gradientlab.neuralblocks.schedulers.cosine_with_warmup import (
     get_cosine_scheduler_with_warmup,
 )
 from gradientlab.training_utils.hf_save import hf_add_custom_model_metadata
+from PIL import PngImagePlugin
+LARGE_ENOUGH_NUMBER = 100
+PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
 
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision("high")
@@ -41,8 +43,8 @@ torch.cuda.manual_seed(seed)
 class Trainer:
     def __init__(
         self,
-        model: GPTForCausalLM,
-        tokenizer: Qwen2TokenizerFast,
+        model: GPTVForCausalLM,
+        tokenizer,
         model_cfg: ModelConfig,
         exp_cfg: ExpConfig,
     ):
@@ -52,13 +54,13 @@ class Trainer:
         self.exp_cfg = exp_cfg
 
         self.device = torch.device(exp_cfg.device)
-        self.model.to(self.device)
+        self.model.to(self.device) # type: ignore
 
         self.epoch_current = 0
         self.step_current = 0
         # self._resume_state() TODO
         self._build_dataloaders()
-        self._compile()
+        #self._compile()
         self._setup_optim()
         self._setup_scaler()
         self._setup_scheduler()
@@ -79,8 +81,8 @@ class Trainer:
             dynamic_ncols=True,
         )
 
-        for i, input_ids in enumerate(pbar, start=1):
-            input_ids = input_ids.to(self.device, non_blocking=True)
+        for i, batch in enumerate(pbar, start=1):
+            batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
             self.optimizer.zero_grad()
             with torch.autocast(
                 device_type=self.device.type,
@@ -88,7 +90,7 @@ class Trainer:
                 enabled=self.is_mixed_precision_on,
             ):
                 output = self.model(
-                    input_ids, labels=input_ids.clone(), use_cache=False
+                    **batch, labels=batch["input_ids"].clone(), use_cache=False
                 )
                 loss = output.loss
 
@@ -129,21 +131,31 @@ class Trainer:
         # TODO val
 
     def _build_dataloader(self, split_name: str):
-        torch_ds = self._load_dataset(split_name)
+        self.torch_ds = self._load_dataset(split_name)
+
+        self.collate_fn = VLMCollate(self.tokenizer)
         return DataLoader(
-            torch_ds,
+            self.torch_ds,
             batch_size=self.exp_cfg.batch_size,
             shuffle=split_name == "train",
             num_workers=self.exp_cfg.num_workers,
             persistent_workers=True,
             pin_memory=False,
             drop_last=True,
+            collate_fn=self.collate_fn,
             multiprocessing_context="fork" if sys.platform in ["darwin"] else None,
         )
 
     def _load_dataset(self, split: str):
-        ds = load_from_disk(self.exp_cfg.ds_name)
-        dataset = PreTokenizedTextDataset(ds)
+        ds_path = Path(self.exp_cfg.ds_name)
+        data_files = {
+            "train": [f.as_posix() for f in ds_path.glob("train*.parquet")],
+            "validation": [f.as_posix() for f in ds_path.glob("validation*.parquet")],
+        }
+        ds = load_dataset("parquet", data_files=data_files, num_proc=10)["train"]
+        #ds = load_from_disk(self.exp_cfg.ds_name)["train"]
+        assert isinstance(ds, Dataset)
+        dataset = IN1KDataset(ds)
         print(f"len ds {split} ={len(dataset)}")
         return dataset
 
@@ -183,7 +195,7 @@ class Trainer:
         hf_save_dir = exp_dir / "model"
         self.model.save_pretrained(hf_save_dir)
         self.tokenizer.save_pretrained(hf_save_dir)
-        hf_add_custom_model_metadata(hf_save_dir, self.exp_cfg.exp_name, self.model, self.model_cfg)
+        hf_add_custom_model_metadata(hf_save_dir, self.exp_cfg.exp_name, self.model.__class__, self.model_cfg.__class__)
 
         torch.save(self.optimizer.state_dict(), exp_dir / "optim.pt")
         torch.save(self.scaler.state_dict(), self.exp_cfg.exp_dir / "scaler.pt")
@@ -202,7 +214,10 @@ class Trainer:
     def _generate(self):
         was_model_training = self.model.training
 
-        inputs = self.tokenizer(["<|im_start|>Ciao sono Mauro e "], return_tensors="pt", add_special_tokens=False)
+        i = random.randint(0, len(self.torch_ds))
+        img, lbl = self.torch_ds[i]
+
+        inputs = self.collate_fn([(img, "<|im_start|>")])
         inputs = {k: v.to(self.device) for k,v in inputs.items()}
         self.model.eval()
         preds = self.model.generate(
@@ -210,7 +225,7 @@ class Trainer:
             max_length=40,
             do_sample=False,
         )
-        print(self.tokenizer.decode(preds[0]))
+        print(f"GT: '{lbl}' - PRED: '{self.tokenizer.decode(preds[0])}'")
 
         if was_model_training:
             self.model.train()

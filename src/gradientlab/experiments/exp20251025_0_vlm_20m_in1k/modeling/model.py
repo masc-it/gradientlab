@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 
+from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.modeling.img_patchify import ImagePatchifier
 from gradientlab.experiments.exp20251025_0_vlm_20m_in1k.modeling.model_cfg import (
     ModelConfig,
 )
@@ -16,6 +17,8 @@ import torch.nn.functional as F
 from transformers import GenerationMixin, PreTrainedModel, AutoModelForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.cache_utils import Cache, DynamicCache
+
+from gradientlab.neuralblocks.attention.causal_mask import make_causal_mask_from_attn_mask
 
 class PositionalEncoding(nn.Module):
     """Default positional encoding."""
@@ -34,7 +37,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x + self.pe[:, start_pos : start_pos + x.size(1)])  # type: ignore
 
 
-class GPTForCausalLM(PreTrainedModel, GenerationMixin):
+class GPTVForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = ModelConfig
     supports_gradient_checkpointing = False
 
@@ -46,6 +49,7 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
         self.vocab_size = config.vocab_size
         self.pad_token_id = config.pad_token_id
 
+        self.img_patchifier = ImagePatchifier(hidden_dim=self.cfg.hidden_dim, patch_size=self.cfg.patch_size )
         self.txt_embed = nn.Embedding(
             config.vocab_size, config.embed_dim, padding_idx=config.pad_token_id
         )
@@ -62,34 +66,40 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
     def get_input_embeddings(self):
         return self.txt_embed
 
-    def set_input_embeddings(self, new_embeds):
-        self.txt_embed = new_embeds
+    def set_input_embeddings(self, value):
+        self.txt_embed = value
 
     def get_output_embeddings(self):
         return self.lm_head
 
-    def set_output_embeddings(self, new_embeds):
-        self.lm_head = new_embeds
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
 
     def tie_weights(self):
         if getattr(self.config, "tie_word_embeddings", True):
             self._tie_or_clone_weights(self.lm_head, self.txt_embed)
 
-    def prepare_inputs_for_generation(
+    def prepare_inputs_for_generation( # type: ignore
         self,
-        input_ids: torch.LongTensor,
-        past_key_values: Cache | None = None,
+        input_ids: torch.Tensor,
+        past_key_values: Optional[Cache] = None,
         attention_mask: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        pixel_values: Optional[torch.Tensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ):
         if past_key_values is not None and past_key_values.get_seq_length() > 0:
             input_ids = input_ids[:, -1:]
+            attention_mask = None
+            # generation stage, image has been already processed
+            pixel_values = None
 
         return {
             "input_ids": input_ids,
             "past_key_values": past_key_values,
-            "attention_mask": None,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
             "cache_position": cache_position,
             "use_cache": kwargs.get("use_cache", True),
         }
@@ -100,8 +110,9 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
 
     def forward(
         self,
-        input_ids: Optional[torch.LongTensor] = None,
+        input_ids: torch.LongTensor,
         attention_mask: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.Tensor] = None,
         past_key_values: Cache | None = None,
         use_cache: Optional[bool] = None,
         labels: Optional[torch.LongTensor] = None,
@@ -112,19 +123,29 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
         use_cache = True if use_cache is None else use_cache
         cache_in = past_key_values if use_cache else None
 
-        Q_LEN = input_ids.size(1)
+        B, Q_LEN = input_ids.size()
 
         if cache_in is None and use_cache:
             cache_in = DynamicCache()
 
-        if inputs_embeds is None:
-            embeds = self.txt_embed(input_ids)
+        if pixel_values is None:
+            img_embeds = torch.empty((B, 0, self.cfg.embed_dim), device=input_ids.device)
+            IMG_LEN = 0
+            attn_causal_mask_4d = None
+        elif pixel_values is not None and attention_mask is not None:
+            img_embeds = self.img_patchifier(pixel_values)
+            IMG_LEN = img_embeds.shape[1]
+            attn_mask_img = torch.ones((B, IMG_LEN), dtype=torch.long, device=input_ids.device)
+            attn_causal_mask_4d = make_causal_mask_from_attn_mask(attention_mask, attn_mask_img)
         else:
-            embeds = inputs_embeds
-
+            raise ValueError("")
+            
+        
+        embeds = self.txt_embed(input_ids)
+        embeds = torch.cat((img_embeds, embeds), dim=1)
         # Offset PE by cache length
         cache_len = 0
-        if use_cache:
+        if use_cache and cache_in is not None:
             cache_len = cache_in.get_seq_length()
 
         # print(f"{Q_LEN=}")
@@ -136,13 +157,13 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
 
         hidden_states, kv_cache = self.decoder(
             hidden_states,
-            attn_mask=attention_mask,
+            attn_mask=attn_causal_mask_4d,
             is_causal=Q_LEN > 1 and attention_mask is None,
             kv_cache=cache_in,
             use_cache=use_cache,
         )
 
-        hidden_states = F.linear(hidden_states, self.dec_adapter.weight.T)
+        hidden_states = F.linear(hidden_states[:, IMG_LEN:], self.dec_adapter.weight.T)
         logits = self.lm_head(hidden_states)
 
         loss = None
@@ -156,26 +177,26 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
             )
 
         return CausalLMOutputWithPast(
-            loss=loss, logits=logits, past_key_values=kv_cache
+            loss=loss, logits=logits, past_key_values=kv_cache # type: ignore
         )
 
-    def _init_weights(self, m):
+    def _init_weights(self, module):
         std = 0.02
-        if isinstance(m, nn.Embedding):
-            nn.init.normal_(m.weight, mean=0.0, std=1 / math.sqrt(self.cfg.embed_dim))
-            m.weight.data[self.cfg.pad_token_id].zero_()
-        elif isinstance(m, nn.Linear):
-            nn.init.normal_(m.weight, std=std)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
+        if isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=1 / math.sqrt(self.cfg.embed_dim))
+            module.weight.data[self.cfg.pad_token_id].zero_()
+        elif isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, std=std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
         # Residual branch scaling
         scale = 1.0 / math.sqrt(2 * self.cfg.num_layers)
-        for name, p in m.named_parameters():
+        for name, p in module.named_parameters():
             if name.endswith(
                 ("self_attn.out_proj.weight", "ffn.w2.weight", "ffn.w3.weight")
             ):
                 with torch.no_grad():
                     p.mul_(scale)
 
-AutoModelForCausalLM.register(ModelConfig, GPTForCausalLM)
+AutoModelForCausalLM.register(ModelConfig, GPTVForCausalLM)
