@@ -12,7 +12,7 @@ class GPTFactory:
     def build_20m():
         tokenizer = byte_tokenizer()
         cfg = ModelConfig(
-            dropout=0.05,
+            dropout=0.01,
             attn_dropout=0.0,
             vocab_size=tokenizer.total_vocab_size,
             pad_token_id=tokenizer.pad_token_id,  # type: ignore
@@ -21,7 +21,7 @@ class GPTFactory:
             embed_dim=256,
             num_layers=22,
             hidden_dim=256,
-            patch_size=16,
+            patch_size=8,
             ffn_mult=4.0,
             hidden_squeeze_ratio=0.5,
             num_heads=4,

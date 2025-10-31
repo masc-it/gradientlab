@@ -60,7 +60,7 @@ class Trainer:
         self.step_current = 0
         # self._resume_state() TODO
         self._build_dataloaders()
-        #self._compile()
+        self._compile()
         self._setup_optim()
         self._setup_scaler()
         self._setup_scheduler()
@@ -162,7 +162,7 @@ class Trainer:
     def _setup_optim(self):
         self.optimizer = AdamW(
             get_adamw_parameters(self.model, weight_decay=self.exp_cfg.weight_decay),
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.95),
             weight_decay=self.exp_cfg.weight_decay,
             lr=self.exp_cfg.max_lr,
             fused=self.device.type == "cuda",
