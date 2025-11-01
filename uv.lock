@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -959,6 +959,11 @@ dependencies = [
     { name = "transformers" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "ipykernel" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = ">=1.10.1" },
@@ -972,6 +977,9 @@ requires-dist = [
     { name = "trackio", specifier = ">=0.6.0" },
     { name = "transformers", specifier = ">=4.57.1" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ipykernel", specifier = ">=7.0.1" }]
 
 [[package]]
 name = "gradio"

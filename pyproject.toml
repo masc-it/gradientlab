@@ -27,3 +27,8 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 wheel-exclude = ["data", ".env"]
 source-exclude = ["data", ".env"]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.0.1",
+]
