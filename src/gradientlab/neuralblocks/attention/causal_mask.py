@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 
 
@@ -40,7 +41,7 @@ def make_bool_causal_mask(
 
 def make_causal_mask_from_attn_mask(
     attn_mask: torch.Tensor,
-    img_attn_mask: torch.Tensor,
+    img_attn_mask: Optional[torch.Tensor],
 ) -> torch.Tensor:
     """
     Build a boolean attention mask for SDPA (PyTorch 2.6+):
@@ -58,7 +59,11 @@ def make_causal_mask_from_attn_mask(
     """
     device = attn_mask.device
 
-    attn_mask = torch.cat((img_attn_mask, attn_mask), dim=1).bool()
+    if img_attn_mask is not None:
+        attn_mask = torch.cat((img_attn_mask, attn_mask), dim=1)
+    
+    attn_mask = attn_mask.bool()
+    
     B, T = attn_mask.shape
     # Allow attending only to non-PAD keys
     key_allow = attn_mask.view(B, 1, 1, T)  # [B,1,1,T]
@@ -72,7 +77,9 @@ def make_causal_mask_from_attn_mask(
 
     # Final boolean mask: True=allow, False=mask
     attn_mask = key_allow & causal_allow  # [B,1,T,T]
-    attn_mask[:, :, :img_attn_mask.shape[1], :img_attn_mask.shape[1]] = True
+
+    if img_attn_mask is not None:
+        attn_mask[:, :, :img_attn_mask.shape[1], :img_attn_mask.shape[1]] = True
 
     return attn_mask
 
