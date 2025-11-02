@@ -32,3 +32,6 @@ source-exclude = ["data", ".env"]
 dev = [
     "ipykernel>=7.0.1",
 ]
+fla = [
+    "flash-linear-attention>=0.4.0"
+]

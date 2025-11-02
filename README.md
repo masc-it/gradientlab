@@ -25,7 +25,7 @@ If you want to fork the repo or install it, keep reading.
 
 ## prereqs
 
-- A linux box with CUDA or apple silicon.
+- A linux box with CUDA or apple silicon (no flash linear attention support for this last one).
     - Rocm may work as well, not tested
 - uv:
 ```
