@@ -214,12 +214,12 @@ class Trainer:
         i = random.randint(0, len(self.torch_ds))
         lbl = self.torch_ds[i]
 
-        inputs = self.collate_fn(["<|im_start|>"])
+        inputs = self.collate_fn([lbl[:20]])
         inputs = {k: v.to(self.device) for k,v in inputs.items()}
         self.model.eval()
         preds = self.model.generate(
             **inputs,
-            max_length=40,
+            max_length=50,
             do_sample=False,
         )
         print(f"GT: '{lbl}' - PRED: '{self.tokenizer.decode(preds[0])}'")
