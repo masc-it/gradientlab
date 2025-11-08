@@ -123,9 +123,6 @@ class GPTVForCausalLM(PreTrainedModel, GenerationMixin):
 
         if attention_mask is not None:
             attention_mask = make_causal_mask_from_attn_mask(attention_mask, None)# type: ignore
-        else:
-            raise ValueError("")
-            
         
         embeds = self.txt_embed(input_ids)
         # Offset PE by cache length
