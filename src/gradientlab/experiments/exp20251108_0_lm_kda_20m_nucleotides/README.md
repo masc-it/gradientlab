@@ -10,7 +10,16 @@ decoder-only transformer, 256 hidden dim, 22-layers, 20M params:
 
 cuda / ROCm only:
 
-```uv add gradientlab[fla]```
+```
+uv sync
+uv add flash-linear-attention
+```
+
+run experiment:
+
+```
+uv run src/gradientlab/experiments exp20251108_0_lm_kda_20m_nucleotides/main.py
+```
 
 # Results
 
