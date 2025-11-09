@@ -23,6 +23,6 @@ class ExpConfig(BaseModel):
     warmup_ratio: float = 0.05
     num_workers: int = 4
     weight_decay: float = 1e-2
-    resume_from: Optional[str] = "/media/mascit/data/Projects/python/gradientlab/src/gradientlab/experiments/exp20251108_0_lm_kda_20m_nucleotides_tasks/data/model"
+    resume_from: Optional[str] = "/media/mascit/data/Projects/python/gradientlab/src/gradientlab/experiments/exp20251108_0_lm_kda_20m_nucleotides/data/model"
     log_steps: int = 10
     save_steps: int = 100
