@@ -18,7 +18,7 @@ uv add flash-linear-attention
 run experiment:
 
 ```
-uv run src/gradientlab/experiments/exp20251108_0_lm_kda_20m_nucleotides/main.py
+uv run src/gradientlab/experiments/exp20251108_0_lm_kda_20m_nucleotides_tasks/main.py
 ```
 
 # Results

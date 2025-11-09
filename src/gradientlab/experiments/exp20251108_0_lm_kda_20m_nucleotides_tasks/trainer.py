@@ -1,11 +1,10 @@
 import json
-from pathlib import Path
 import sys
 from datasets import Dataset
 from tqdm import tqdm
 import trackio
 
-from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.exp_config import (
+from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides_tasks.exp_config import (
     ExpConfig,
 )
 from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.modeling.model import (
@@ -14,7 +13,7 @@ from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.modeling.model
 from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.modeling.model_cfg import (
     ModelConfig,
 )
-from datasets import load_from_disk, load_dataset
+from datasets import load_dataset
 from torch.utils.data import DataLoader
 import torch
 import random
@@ -31,11 +30,6 @@ from gradientlab.neuralblocks.schedulers.cosine_with_warmup import (
     get_cosine_scheduler_with_warmup,
 )
 from gradientlab.training_utils.hf_save import hf_add_custom_model_metadata
-from PIL import PngImagePlugin
-
-LARGE_ENOUGH_NUMBER = 100
-PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
-
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision("high")
 
@@ -65,7 +59,6 @@ class Trainer:
         self.epoch_current = 0
         self.step_current = 0
         # self._resume_state() TODO
-        self._resume_from()
         self._build_dataloaders()
         self._compile()
         self._setup_optim()
@@ -97,7 +90,7 @@ class Trainer:
                 enabled=self.is_mixed_precision_on,
             ):
                 output = self.model(
-                    **batch, labels=batch["input_ids"].clone(), use_cache=False
+                    **batch, use_cache=False
                 )
                 loss = output.loss
 
@@ -138,7 +131,7 @@ class Trainer:
         # TODO val
 
     def _build_dataloader(self, split_name: str):
-        self.torch_ds = self._load_dataset(split_name)
+        self.torch_ds, self.torch_ds_val = self._load_dataset(split_name)
 
         self.collate_fn = (
             NucleotidesCollate(self.tokenizer)
@@ -160,12 +153,15 @@ class Trainer:
     def _load_dataset(self, split: str):
         ds_path = self.exp_cfg.ds_name
 
-        ds = load_dataset(ds_path)["train"]
-        # ds = load_from_disk(self.exp_cfg.ds_name)["train"]
-        assert isinstance(ds, Dataset)
-        dataset = self._filter_dataset(ds)
-        print(f"len ds {split} ={len(dataset)}")
-        return dataset
+        ds = load_dataset(ds_path)
+        
+        ds_train = ds["train"]
+        assert isinstance(ds_train, Dataset)
+        dataset_train = self._filter_dataset(ds_train)
+        dataset_test = self._filter_dataset(ds["test"])# type: ignore
+
+        print(f"len ds {split} ={len(dataset_train)}")
+        return dataset_train, dataset_test
 
     def _filter_dataset(self, ds: Dataset):
         task = self.exp_cfg.task
@@ -176,8 +172,8 @@ class Trainer:
             "enhancers",
             "enhancers_types",
             "splice_sites_all",
-            "splice_sites_acceptor",
-            "splice_sites_donor",
+            "splice_sites_acceptors",
+            "splice_sites_donors",
             "H2AFZ",
             "H3K27ac",
             "H3K27me3",
@@ -201,8 +197,8 @@ class Trainer:
                     "enhancers",
                     "enhancers_types",
                     "splice_sites_all",
-                    "splice_sites_acceptor",
-                    "splice_sites_donor",
+                    "splice_sites_acceptors",
+                    "splice_sites_donors",
                 ),
                 input_columns="task",
             )
@@ -213,7 +209,7 @@ class Trainer:
     def _setup_optim(self):
         self.optimizer = AdamW(
             get_adamw_parameters(self.model, weight_decay=self.exp_cfg.weight_decay),
-            betas=(0.9, 0.95),
+            betas=(0.9, 0.999),
             weight_decay=self.exp_cfg.weight_decay,
             lr=self.exp_cfg.max_lr,
             fused=self.device.type == "cuda",
@@ -270,15 +266,15 @@ class Trainer:
     def _generate(self):
         was_model_training = self.model.training
 
-        i = random.randint(0, len(self.torch_ds))
-        lbl = self.torch_ds[i]
+        i = random.randint(0, len(self.torch_ds_val))
+        lbl = self.torch_ds_val[i]
 
-        inputs = self.collate_fn([lbl[:20]])
+        inputs = self.collate_fn([lbl.split(">")[0] + ">"])
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         self.model.eval()
         preds = self.model.generate(
             **inputs,
-            max_length=50,
+            max_length=1200,
             do_sample=False,
         )
         print(f"GT: '{lbl}' - PRED: '{self.tokenizer.decode(preds[0])}'")

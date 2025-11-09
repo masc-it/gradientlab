@@ -2,13 +2,13 @@ import json
 import sys
 
 from transformers import GenerationConfig
-from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.exp_config import (
+from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides_tasks.exp_config import (
     ExpConfig,
 )
 from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.modeling.factory import (
     GPTFactory,
 )
-from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.trainer import (
+from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides_tasks.trainer import (
     Trainer,
 )
 from gradientlab.logging_utils.log_model_params import pretty_print_model
@@ -17,12 +17,12 @@ DEBUG_GEN = False
 
 def main():
     print("=== START TRAINING ===")
-    model, tokenizer, model_cfg = GPTFactory.build_20m()
+    exp_cfg = ExpConfig()
+    model, tokenizer, model_cfg = GPTFactory.build_20m(exp_cfg.resume_from)
 
     print(json.dumps(model_cfg.to_dict(), indent=2) + "\n")
     pretty_print_model(model)
 
-    exp_cfg = ExpConfig()
     print("\n" + exp_cfg.model_dump_json(indent=2))
     
     if DEBUG_GEN:

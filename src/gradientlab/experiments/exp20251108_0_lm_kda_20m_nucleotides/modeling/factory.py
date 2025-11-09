@@ -2,14 +2,14 @@ from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.modeling.model
     ModelConfig,
 )
 from gradientlab.experiments.exp20251108_0_lm_kda_20m_nucleotides.modeling.model import (
-    GPTVForCausalLM,
+    GPTNucleotidesForCausalLM,
 )
 from gradientlab.tokenizers.byte_tokenizer import byte_tokenizer
 
 
 class GPTFactory:
     @staticmethod
-    def build_20m():
+    def build_20m(resume_from: str | None = None):
         tokenizer = byte_tokenizer()
         cfg = ModelConfig(
             dropout=0.01,
@@ -31,5 +31,9 @@ class GPTFactory:
             tie_word_embeddings=False,
         )
 
-        model = GPTVForCausalLM(cfg)
+        if resume_from is None:
+            model = GPTNucleotidesForCausalLM(cfg)
+        else:
+            print(" === LOAD WEIGHTS FROM CKPT ===")
+            model = GPTNucleotidesForCausalLM.from_pretrained(resume_from)
         return model, tokenizer, cfg

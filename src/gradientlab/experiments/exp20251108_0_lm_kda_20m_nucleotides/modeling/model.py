@@ -17,8 +17,6 @@ from transformers import GenerationMixin, PreTrainedModel, AutoModelForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.cache_utils import Cache, DynamicCache
 
-from gradientlab.neuralblocks.attention.causal_mask import make_causal_mask_from_attn_mask
-
 class PositionalEncoding(nn.Module):
     """Default positional encoding."""
 
@@ -36,7 +34,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x + self.pe[:, start_pos : start_pos + x.size(1)])  # type: ignore
 
 
-class GPTVForCausalLM(PreTrainedModel, GenerationMixin):
+class GPTNucleotidesForCausalLM(PreTrainedModel, GenerationMixin):
     config_class = ModelConfig
     supports_gradient_checkpointing = False
 
@@ -178,4 +176,4 @@ class GPTVForCausalLM(PreTrainedModel, GenerationMixin):
                 with torch.no_grad():
                     p.mul_(scale)
 
-AutoModelForCausalLM.register(ModelConfig, GPTVForCausalLM)
+AutoModelForCausalLM.register(ModelConfig, GPTNucleotidesForCausalLM)
