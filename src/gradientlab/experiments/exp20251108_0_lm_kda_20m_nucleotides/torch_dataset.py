@@ -37,7 +37,25 @@ class NucleotidesTaskDataset(TDataset):
     
     def __len__(self):
         return len(self.ds)
+    
+class NucleotidesTaskDatasetInference(TDataset):
+    
+    def __init__(self, ds: Dataset) -> None:
+        super().__init__()
 
+        self.ds = ds
+    
+    def __getitem__(self, index):
+        
+        sample = self.ds[index]
+        seq = sample["sequence"]
+        label = sample["label"]
+        task = sample["task"]
+
+        return f"<|im_start|>{seq} | {task} >", label
+    
+    def __len__(self):
+        return len(self.ds)
 
 
 class NucleotidesCollate:
