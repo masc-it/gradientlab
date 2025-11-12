@@ -154,7 +154,7 @@ class GPTNucleotidesForCausalLM(PreTrainedModel, GenerationMixin):
             )
 
         return CausalLMOutputWithPast(
-            loss=loss, logits=logits, past_key_values=kv_cache # type: ignore
+            loss=loss, logits=logits, past_key_values=kv_cache, hidden_states=hidden_states # type: ignore
         )
 
     def _init_weights(self, module):
