@@ -188,7 +188,7 @@ class Trainer:
             "H4K20me1",
         ]
         if task == "pretraining":
-            ds = ds.filter(lambda x: len(x) == 300, input_columns="sequence", num_proc=6)
+            ds = ds.filter(lambda x: len(x) == 600, input_columns="sequence", num_proc=6)
             return NucleotidesDataset(ds)
         elif task == "600_tasks":
             ds = ds.filter(
