@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+import inspect
 
 
 def hf_add_custom_model_metadata(hf_save_dir: Path, exp_name: str, model_cls, config_cls):
 
+    exp_name = Path(inspect.getfile(model_cls)).parent.parent.stem
     model_name = model_cls.__name__
     custom_model_str = f"""
 from gradientlab.experiments.{exp_name}.modeling.model import {model_name}
