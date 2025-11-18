@@ -37,13 +37,19 @@ class TextDatasetPacker:
     def pack_dataset(
         self, ds: Dataset | DatasetDict, column: str, num_proc: int = 8
     ) -> Dataset | DatasetDict:
-        if column not in ds.column_names:
+        
+        if isinstance(ds, Dataset):
+            cols = ds.column_names
+        else:
+            cols = ds["train"].column_names
+
+        if column not in cols:
             raise ValueError(f"Column '{column}' not found in the dataset.")
 
         tok_ds = ds.map(
             self._encode_batch,
             batched=True,
-            remove_columns=list(ds.column_names),
+            remove_columns=cols,
             desc="Tokenization..",
             num_proc=num_proc,
             batch_size=256,
