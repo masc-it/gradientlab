@@ -66,9 +66,9 @@ class Trainer:
         self._compile()
         self._setup_optim()
         self._setup_scaler()
-        self._setup_scheduler()
 
         self._restore_training_state()
+        self._setup_scheduler()
 
     def train(
         self,
@@ -226,15 +226,19 @@ class Trainer:
         self.dtype = torch.bfloat16 if self.is_mixed_precision_on else None
 
     def _setup_scheduler(self):
-        total_steps = self.dl_len * (self.exp_cfg.num_epochs - self.epoch_current)
-        warmup_steps = int(total_steps * self.exp_cfg.warmup_ratio)
-
+        total_steps = self.dl_len * self.exp_cfg.num_epochs
+        tot_warmup_steps = int(total_steps * self.exp_cfg.warmup_ratio)
+        
         self.scheduler = get_cosine_scheduler_with_warmup(
             self.optimizer,
             total_steps,
-            warmup_steps,
+            tot_warmup_steps,
             self.exp_cfg.min_lr,
         )
+        
+        # Fast-forward to current position
+        for _ in range(self.dl_len * self.epoch_current):
+            self.scheduler.step()
 
     def _compile(self):
         if self.device.type in ["cuda", "mps"]:
