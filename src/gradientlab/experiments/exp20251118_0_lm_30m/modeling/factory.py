@@ -1,7 +1,7 @@
 from gradientlab.tokenizers.byte_tokenizer import byte_tokenizer
 
-from taggingautomation.offers_gpt.exp20251118_0_lm_30m.modeling.model import OffersGPTForCausalLM
-from taggingautomation.offers_gpt.exp20251118_0_lm_30m.modeling.model_cfg import ModelConfig
+from gradientlab.experiments.exp20251118_0_lm_30m.modeling.model import GPTForCausalLM
+from gradientlab.experiments.exp20251118_0_lm_30m.modeling.model_cfg import ModelConfig
 
 
 class GPTFactory:
@@ -27,8 +27,8 @@ class GPTFactory:
         )
 
         if resume_from is None:
-            model = OffersGPTForCausalLM(cfg)
+            model = GPTForCausalLM(cfg)
         else:
             print(" === LOAD WEIGHTS FROM CKPT ===")
-            model = OffersGPTForCausalLM.from_pretrained(resume_from, config=cfg)
+            model = GPTForCausalLM.from_pretrained(resume_from, config=cfg)
         return model, tokenizer, cfg

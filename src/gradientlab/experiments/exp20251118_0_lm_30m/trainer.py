@@ -21,6 +21,7 @@ import random
 import numpy as np
 from torch.optim.adamw import AdamW
 from gradientlab.experiments.exp20251113_0_lm_vanilla_kda_20m_nucleotides.torch_dataset import (
+    HumanGenomeDataset,
     NucleotidesDataset,
     NucleotidesCollate,
     NucleotidesTaskCollate,
@@ -101,7 +102,7 @@ class Trainer:
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
-            norm_pre_clip = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            norm_pre_clip = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.scheduler.step()
@@ -140,7 +141,7 @@ class Trainer:
 
         self.collate_fn = (
             NucleotidesCollate(self.tokenizer)
-            if self.exp_cfg.task == "pretraining"
+            if "pretraining" in self.exp_cfg.task
             else NucleotidesTaskCollate(self.tokenizer)
         )
         return DataLoader(
@@ -158,7 +159,10 @@ class Trainer:
     def _load_dataset(self, split: str):
         ds_path = self.exp_cfg.ds_name
 
-        ds = load_dataset(ds_path)["train"]
+        if self.exp_cfg.task == "pretraining_human":
+            ds = load_dataset(ds_path, name="6kbp")["train"]
+        else:
+            ds = load_dataset(ds_path)["train"]
         # ds = load_from_disk(self.exp_cfg.ds_name)["train"]
         assert isinstance(ds, Dataset)
         dataset = self._filter_dataset(ds)
@@ -189,7 +193,10 @@ class Trainer:
         ]
         if task == "pretraining":
             ds = ds.filter(lambda x: len(x) == 600, input_columns="sequence", num_proc=6)
+            #ds = ds.select(list(range(1000)))
             return NucleotidesDataset(ds)
+        elif task == "pretraining_human":
+            return HumanGenomeDataset(ds)
         elif task == "600_tasks":
             ds = ds.filter(
                 lambda x: x
@@ -212,7 +219,7 @@ class Trainer:
     def _setup_optim(self):
         self.optimizer = AdamW(
             get_adamw_parameters(self.model, weight_decay=self.exp_cfg.weight_decay),
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.95),
             weight_decay=self.exp_cfg.weight_decay,
             lr=self.exp_cfg.max_lr,
             fused=self.device.type == "cuda",

@@ -1,3 +1,4 @@
+import random
 from typing import Any
 import torch
 from torch.utils.data import Dataset as TDataset
@@ -14,6 +15,25 @@ class NucleotidesDataset(TDataset):
     def __getitem__(self, index):
         
         sample = self.ds[index]["sequence"]
+        return f"<|im_start|>{sample}<|im_end|>"
+    
+    def __len__(self):
+        return len(self.ds)
+    
+
+class HumanGenomeDataset(TDataset):
+    
+    def __init__(self, ds: Dataset, max_len: int = 512) -> None:
+        super().__init__()
+
+        self.ds = ds
+        self.max_len = max_len
+    
+    def __getitem__(self, index):
+        
+        sample = self.ds[index]["sequence"]
+        start = random.randint(0, len(sample) - self.max_len)
+        sample = sample[start:start + self.max_len]
         return f"<|im_start|>{sample}<|im_end|>"
     
     def __len__(self):
