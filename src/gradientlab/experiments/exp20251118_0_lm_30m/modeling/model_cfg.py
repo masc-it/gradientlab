@@ -20,6 +20,7 @@ class ModelConfig(PretrainedConfig):
         max_length: int = 4096,
         max_position_embeddings: int = 4096,
         use_bias: bool = True,
+        loss_window: int = 128,
         num_heads: int = 4,
         num_kv_groups: int = 2,
         ffn_mult: float = 4.0,
@@ -33,7 +34,7 @@ class ModelConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs
         )
-
+        self.loss_window = loss_window
         self.max_position_embeddings = max_position_embeddings
         self.num_layers = num_layers
         self.num_hidden_layers = num_layers

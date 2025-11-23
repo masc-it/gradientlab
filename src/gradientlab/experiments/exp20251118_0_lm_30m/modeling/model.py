@@ -144,14 +144,25 @@ class GPTForCausalLM(PreTrainedModel, GenerationMixin):
         if labels is not None:
             shift_logits = logits[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
+            B, T, V = shift_logits.shape
+            max_start = T - self.cfg.loss_window
+            start = torch.randint(0, max_start + 1, (1,), device=shift_logits.device).item()
+            end = start + self.cfg.loss_window
+
             loss = F.cross_entropy(
-                shift_logits.view(-1, self.vocab_size),
-                shift_labels.view(-1),
+                shift_logits[:, start:end, :].reshape(-1, V),
+                shift_labels[:, start:end].reshape(-1),
                 ignore_index=self.cfg.pad_token_id,
             )
+        """    
+        loss = F.cross_entropy(
+            shift_logits.view(-1, self.vocab_size),
+            shift_labels.view(-1),
+            ignore_index=self.cfg.pad_token_id,
+        ) """
 
         return CausalLMOutputWithPast(
-            loss=loss, logits=logits, past_key_values=kv_cache, hidden_states=embeds # type: ignore
+            loss=loss, logits=logits, past_key_values=kv_cache, hidden_states=hidden_states # type: ignore
         )
 
     def _init_weights(self, module):
