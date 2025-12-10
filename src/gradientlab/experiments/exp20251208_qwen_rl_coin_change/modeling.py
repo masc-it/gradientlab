@@ -59,6 +59,9 @@ class ByteLevelTokenizer(PreTrainedTokenizer):
         self.model_max_length = 4096
         self._decode_errors = "replace"
 
+        # Important: disable token_type_ids (not used by decoder-only models)
+        self.model_input_names = ["input_ids", "attention_mask"]
+
     # ----- Required API -----
 
     @property

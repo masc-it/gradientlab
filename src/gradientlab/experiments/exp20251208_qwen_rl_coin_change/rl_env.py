@@ -142,12 +142,12 @@ def generate_min_coins_dataset(
 
 # ---------- Parsing utils for RL verification ----------
 
-_COINS_RE = re.compile(r"^\s*coins\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-_AMOUNT_RE = re.compile(r"^\s*amount\s*:\s*(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
+_COINS_RE = re.compile(r"^coins\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_AMOUNT_RE = re.compile(r"^amount\s*:\s*(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
 _ANSWER_RE = re.compile(
-    r"^\s*answer\s*:\s*([\-]?\d+)\s*$", re.IGNORECASE | re.MULTILINE
+    r"^answer\s*:\s*([\-]?\d+)\s*$", re.IGNORECASE | re.MULTILINE
 )
-_SOLUTION_RE = re.compile(r"^\s*solution\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_SOLUTION_RE = re.compile(r"^solution\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 
 
 def _parse_coins_and_amount(problem_text: str) -> Tuple[List[int], int]:
@@ -243,6 +243,7 @@ def trace_score(
     pred_solution: Optional[List[int]],
     true_solution: List[int],
     amount: int,
+    coins: List[int],
 ) -> float:
     """
     Score the predicted solution trace in [0.0, 1.0] by checking values
@@ -254,8 +255,17 @@ def trace_score(
       - element_component: fraction of positions i where pred[i] == true[i]
 
     Final trace_score is a weighted combination of these components.
+
+    Validation:
+      - If any coin in pred_solution is not in the valid coins set, return 0.0
+      - If len(pred_solution) != len(true_solution), apply 0.5x penalty
     """
     if pred_solution is None:
+        return 0.0
+
+    # Validate all predicted coins are in the valid set
+    coins_set = set(coins)
+    if any(c not in coins_set for c in pred_solution):
         return 0.0
 
     # Special case: amount == 0
@@ -270,8 +280,10 @@ def trace_score(
     len_true = len(true_solution)
     len_pred = len(pred_solution)
 
-    # 1) Amount correctness (hard constraint-like)
-    amount_component = 1.0 if sum(pred_solution) == amount else 0.0
+    # 1) Amount correctness - HARD GATE
+    # If sum doesn't match target amount, trace is invalid
+    if sum(pred_solution) != amount:
+        return 0.0
 
     # 2) Length similarity (soft)
     length_diff = abs(len_pred - len_true)
@@ -283,16 +295,16 @@ def trace_score(
     matches = sum(1 for i in range(min_len) if pred_solution[i] == true_solution[i])
     element_component = matches / max(1, len_true)
 
-    # Weights for combining the three components
-    w_amount = 0.4
-    w_length = 0.2
-    w_element = 0.4
+    # Weights for combining length and element components
+    # (amount is now a hard gate, not weighted)
+    w_length = 0.33
+    w_element = 0.67
 
-    score = (
-        w_amount * amount_component
-        + w_length * length_component
-        + w_element * element_component
-    )
+    score = w_length * length_component + w_element * element_component
+
+    # Apply length mismatch penalty (0.5x) if lengths don't match
+    if len_pred != len_true:
+        score *= 0.5
 
     # Safety clip into [0, 1]
     return max(0.0, min(1.0, score))
@@ -301,7 +313,7 @@ def trace_score(
 def verify_solution(
     problem_text: str,
     predicted_text: str,
-    answer_weight: float = 0.7,
+    answer_weight: float = 0.1,
     k: float = 1.0,
     eps: float = 1e-8,
 ) -> float:
@@ -357,7 +369,7 @@ def verify_solution(
     base_reward = answer_weight * 1.0  # answer_score == 1.0 here
 
     # Trace score with element-wise comparison
-    tscore = trace_score(pred_solution, true_solution, amount)
+    tscore = trace_score(pred_solution, true_solution, amount, coins)
 
     reward = base_reward + trace_weight * tscore
     # Safety clip (should already be in [0, 1])
