@@ -1,3 +1,4 @@
+import math
 import random
 import re
 from typing import List, Tuple, Optional
@@ -225,58 +226,139 @@ def _parse_answer_and_solution(
 # ---------- Reward function for RL ----------
 
 
-def verify_solution(problem_text: str, predicted_text: str) -> float:
+def score_fn(
+    pred_answer: float, true_answer: float, eps: float = 1e-8, k: float = 1.0
+) -> float:
+    scale = max(abs(true_answer), eps)
+    rel_error = abs(pred_answer - true_answer) / scale
+    # true: 3, pred=2 =>
+    # scale = 3
+    # rel_error = abs(2-3) / 3 = 0.333
+    # e^(-1*0.333) = 0.71
+    # Exponential decay of reward with relative error
+    return math.exp(-k * rel_error)
+
+
+def trace_score(
+    pred_solution: Optional[List[int]],
+    true_solution: List[int],
+    amount: int,
+) -> float:
+    """
+    Score the predicted solution trace in [0.0, 1.0] by checking values
+    one by one against a true optimal solution.
+
+    Components (all in [0, 1]):
+      - amount_component: 1 if sum(pred_solution) == amount, else 0
+      - length_component: smooth penalty based on |len(pred) - len(true)|
+      - element_component: fraction of positions i where pred[i] == true[i]
+
+    Final trace_score is a weighted combination of these components.
+    """
+    if pred_solution is None:
+        return 0.0
+
+    # Special case: amount == 0
+    if amount == 0:
+        # For zero amount, best solution is usually an empty list
+        return 1.0 if sum(pred_solution) == 0 and len(pred_solution) == 0 else 0.0
+
+    if not true_solution:
+        # Should not normally happen; be conservative
+        raise ValueError("true solution is empty, check data")
+
+    len_true = len(true_solution)
+    len_pred = len(pred_solution)
+
+    # 1) Amount correctness (hard constraint-like)
+    amount_component = 1.0 if sum(pred_solution) == amount else 0.0
+
+    # 2) Length similarity (soft)
+    length_diff = abs(len_pred - len_true)
+    # Normalized penalty by true length; clipped in [0, 1]
+    length_component = max(0.0, 1.0 - length_diff / max(1, len_true))
+
+    # 3) Element-wise matches (position-by-position)
+    min_len = min(len_true, len_pred)
+    matches = sum(1 for i in range(min_len) if pred_solution[i] == true_solution[i])
+    element_component = matches / max(1, len_true)
+
+    # Weights for combining the three components
+    w_amount = 0.4
+    w_length = 0.2
+    w_element = 0.4
+
+    score = (
+        w_amount * amount_component
+        + w_length * length_component
+        + w_element * element_component
+    )
+
+    # Safety clip into [0, 1]
+    return max(0.0, min(1.0, score))
+
+
+def verify_solution(
+    problem_text: str,
+    predicted_text: str,
+    answer_weight: float = 0.7,
+    k: float = 1.0,
+    eps: float = 1e-8,
+) -> float:
     """
     Compute a scalar reward in [0.0, 1.0] for the model's predicted text.
 
-    Logic:
-      1. Parse coins & amount from problem_text.
-      2. Compute the *true* optimal answer & one optimal solution via DP.
-      3. Parse predicted answer & solution from predicted_text.
-      4. Give reward = 1.0 iff:
-         - predicted_answer == true_answer, and
-         - if true_answer != -1:
-             - predicted_solution is parseable,
-             - sum(predicted_solution) == amount,
-             - len(predicted_solution) == true_answer
-         - if true_answer == -1:
-             - we only require predicted_answer == -1
+    Reward structure:
 
-      Otherwise, reward = 0.0.
+      Let:
+        a  = exponential numeric score in (0, 1]
+        t  = trace score in [0, 1]
+        w  = answer_weight in (0, 1)
+        1-w = trace_weight
 
-    You can easily change this to shaped rewards if you like.
+      - If the numeric answer is wrong:
+            reward = w * a
+        (purely distance-based shaping, ignores the trace)
+
+      - If the numeric answer is exactly correct:
+            reward = w * 1.0 + (1 - w) * t
+                  ∈ [w, 1.0]
     """
+    if not (0.0 < answer_weight < 1.0):
+        raise ValueError("answer_weight must be in (0, 1).")
+
     try:
         coins, amount = _parse_coins_and_amount(problem_text)
     except ValueError:
         # Problem text is malformed; safest to give zero reward
         return 0.0
 
+    # true_answer: minimal number of coins
+    # true_solution: one optimal decomposition
     true_answer, true_solution = solve_min_coins(coins, amount)
+
     pred_answer, pred_solution = _parse_answer_and_solution(predicted_text)
 
     # If we couldn't parse the answer, zero reward
     if pred_answer is None:
         return 0.0
 
-    # If the problem has no solution, we only care that the model says -1.
-    if true_answer == -1:
-        return 1.0 if pred_answer == -1 else 0.0
+    # Numeric answer component
+    answer_score = score_fn(pred_answer, true_answer, eps=eps, k=k)
+    trace_weight = 1.0 - answer_weight
 
-    # Problem is solvable: check predicted answer
+    # Wrong numeric answer → only distance-based signal, ignore trace
     if pred_answer != true_answer:
-        return 0.0
+        reward = answer_weight * answer_score
+        return max(0.0, min(1.0, reward))
 
-    # Answer is correct; now check the solution string
-    if pred_solution is None:
-        # Could not parse solution → zero reward
-        return 0.0
+    # Numeric answer is correct
+    # Base reward for getting the answer exactly right
+    base_reward = answer_weight * 1.0  # answer_score == 1.0 here
 
-    # Check correct sum and count
-    if sum(pred_solution) != amount:
-        return 0.1
-    if len(pred_solution) != true_answer:
-        return 0.1
+    # Trace score with element-wise comparison
+    tscore = trace_score(pred_solution, true_solution, amount)
 
-    # Everything matches (correct min count, correct decomposition)
-    return 1.0
+    reward = base_reward + trace_weight * tscore
+    # Safety clip (should already be in [0, 1])
+    return max(0.0, min(1.0, reward))

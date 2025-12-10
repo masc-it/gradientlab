@@ -35,6 +35,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 #  ENVIRONMENT
 # ---------------------------------------------------------
 
+from gradientlab.experiments.exp20251208_qwen_rl_coin_change.modeling import (
+    init_qwen3_10m_bytelevel,
+)
 from gradientlab.experiments.exp20251208_qwen_rl_coin_change.rl_env import (
     generate_min_coins_instance,
     verify_solution,
@@ -59,38 +62,43 @@ def ensure_dir(path: str) -> None:
 
 @dataclass
 class TrainConfig:
-    model_name: str = "gpt2"
-    device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device: torch.device = torch.device(
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
 
     # RL sampling
-    max_new_tokens: int = 64
+    max_new_tokens: int = 256
     temperature: float = 0.8
     top_k: int = 50
 
     # GRPO
-    batch_size: int = 8
-    group_size: int = 4
+    batch_size: int = 4
+    group_size: int = 2
     entropy_coef: float = 0.01
     max_grad_norm: float = 1.0
 
     # Optim
-    lr: float = 1e-5
+    lr: float = 8e-5
     adam_betas: Tuple[float, float] = (0.9, 0.95)
     weight_decay: float = 0.0
 
     # AMP
     use_amp: bool = True
-    amp_dtype: torch.dtype = torch.bfloat16  # use torch.float16 if you need GradScaler
+    amp_dtype: torch.dtype = torch.float16  # use torch.float16 if you need GradScaler
 
     # Loop
     num_steps: int = 10_000
     log_every: int = 10
-    save_every: int = 1_000
+    save_every: int = 100
     save_dir: str = "./checkpoints_coinchange"
 
     # Optional speed/memory tweaks
     enable_grad_checkpointing: bool = False
-    compile_forward: bool = False  # torch.compile for recompute forward
+    compile_forward: bool = True  # torch.compile for recompute forward
 
 
 # ---------------------------------------------------------
@@ -132,18 +140,13 @@ def generate_problem_batch(batch_size: int, rng: random.Random) -> List[Dict[str
 
 
 def load_model_and_tokenizer(cfg: TrainConfig):
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    model, tokenizer = init_qwen3_10m_bytelevel()
     # Tie pad to eos; use LEFT padding for decoder-only batching
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
-    model = AutoModelForCausalLM.from_pretrained(cfg.model_name)
     model.config.pad_token_id = tokenizer.pad_token_id
-    if cfg.enable_grad_checkpointing and hasattr(
-        model, "gradient_checkpointing_enable"
-    ):
-        model.gradient_checkpointing_enable()
     model.to(cfg.device)
 
     if cfg.compile_forward and hasattr(torch, "compile"):
@@ -177,7 +180,7 @@ def rollout_and_compute_logprobs(
     device = cfg.device
 
     # Encode batch
-    enc = tokenizer(prompts, return_tensors="pt", padding=True, truncation=True)
+    enc = tokenizer(prompts, return_tensors="pt", padding="longest")
     input_ids = enc["input_ids"].to(device)
     attention_mask = enc["attention_mask"].to(device)
     B = input_ids.size(0)
@@ -198,7 +201,6 @@ def rollout_and_compute_logprobs(
             eos_token_id=eos_id,
             pad_token_id=pad_id,
             return_dict_in_generate=True,
-            generator=sample_generator,
         )
         gen_ids = gen_out.sequences  # [B, S]
 
@@ -211,20 +213,10 @@ def rollout_and_compute_logprobs(
     model.train()
     # Autocast for memory/speed; GradScaler only needed for fp16
     use_amp = cfg.use_amp and torch.cuda.is_available()
-    scaler_needed = use_amp and (cfg.amp_dtype == torch.float16)
-    autocast_ctx = torch.cuda.amp.autocast if use_amp else torch.autocast
-    autocast_kwargs = {"device_type": "cuda", "dtype": cfg.amp_dtype} if use_amp else {}
-
-    with (
-        autocast_ctx(**autocast_kwargs) if use_amp else torch.no_grad()
-    ):  # torch.no_grad replaced below
-        pass  # placeholder to show structure; we won't use this context here.
 
     # We *do* want grads in this block:
-    with (
-        torch.cuda.amp.autocast(dtype=cfg.amp_dtype)
-        if use_amp
-        else contextlib_nullcontext()
+    with torch.autocast(
+        dtype=cfg.amp_dtype, device_type=cfg.device.type, enabled=use_amp
     ):
         outputs = model(gen_ids, attention_mask=gen_attn, use_cache=False)
         logits = outputs.logits  # [B, S, V]
@@ -261,7 +253,7 @@ def rollout_and_compute_logprobs(
     for i in range(B):
         gl = gen_lens[i].item()
         comp_ids = gen_ids[i, prefix_width:gl]
-        decoded_completions.append(tokenizer.decode(comp_ids, skip_special_tokens=True))
+        decoded_completions.append(tokenizer.decode(comp_ids))
 
     return logprob_per_seq, entropy_per_seq, decoded_completions
 
@@ -303,7 +295,7 @@ def grpo_reinforce_step(
     """
     device = cfg.device
     batch_size, group_size = cfg.batch_size, cfg.group_size
-    B = batch_size * group_size
+    # B = batch_size * group_size
 
     # 1) Generate problems
     problems = generate_problem_batch(batch_size=batch_size, rng=rng)
@@ -357,7 +349,7 @@ def grpo_reinforce_step(
 
     use_amp = cfg.use_amp and torch.cuda.is_available()
     scaler_needed = use_amp and (cfg.amp_dtype == torch.float16)
-    scaler = torch.cuda.amp.GradScaler(enabled=scaler_needed)
+    scaler = torch.GradScaler(enabled=scaler_needed)
 
     optimizer.zero_grad(set_to_none=True)
     if scaler_needed:
@@ -385,16 +377,6 @@ def grpo_reinforce_step(
 # ---------------------------------------------------------
 
 
-class contextlib_nullcontext:
-    """Simple stand-in for contextlib.nullcontext to avoid import."""
-
-    def __enter__(self):
-        return None
-
-    def __exit__(self, *args):
-        return False
-
-
 def main():
     # Basic setup
     torch.set_float32_matmul_precision("high")
@@ -419,7 +401,7 @@ def main():
     torch_sampler = torch.Generator(
         device=device.type if device.type == "cuda" else "cpu"
     )
-    torch_sampler.manual_seed(1234)
+    torch_sampler.manual_seed(42)
 
     rng = random.Random(42)
 
@@ -449,7 +431,6 @@ def main():
             ensure_dir(ckpt_dir)
             # HF weights/tokenizer
             model.save_pretrained(ckpt_dir)
-            tokenizer.save_pretrained(ckpt_dir)
             # Optimizer + RNG states for full resume
             torch.save(
                 {
