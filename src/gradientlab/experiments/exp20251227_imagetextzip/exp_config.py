@@ -22,9 +22,9 @@ class ExpConfig(BaseModel):
     exp_name: str = Path(__file__).parent.stem
 
     exp_dir: Path = exp_dir
-    num_epochs: int = 1500
-    min_lr: float = 5e-5
-    max_lr: float = 2e-4
+    num_epochs: int = 4200
+    min_lr: float = 6e-5
+    max_lr: float = 3e-4
     warmup_ratio: float = 0.1
     num_workers: int = 4
     weight_decay: float = 1e-2

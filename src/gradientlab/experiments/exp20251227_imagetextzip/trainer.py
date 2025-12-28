@@ -74,6 +74,7 @@ class Trainer:
         for epoch in range(self.epoch_current, self.exp_cfg.num_epochs):
             self.train_one_epoch(epoch)
             self.epoch_current += 1
+        trackio.finish()
 
     def train_one_epoch(self, epoch_idx: int):
         self.model.train()
