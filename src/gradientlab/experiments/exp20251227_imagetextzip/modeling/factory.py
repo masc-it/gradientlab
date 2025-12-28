@@ -1,3 +1,4 @@
+from pathlib import Path
 import torch
 from gradientlab.experiments.exp20251227_imagetextzip.modeling.model import (
     DecoderConfig,
@@ -21,9 +22,9 @@ class GPTFactory:
                 embed_dim=48,
                 depths=(2, 2, 2, 2),
                 num_heads=(2, 2, 4, 8),
-                drop=0.05,
-                attn_drop=0.05,
-                drop_path=0.05,
+                drop=0.2,
+                attn_drop=0.2,
+                drop_path=0.1,
                 window_size=8,
                 force_flash=False,
             ),
@@ -34,13 +35,13 @@ class GPTFactory:
                 n_heads=8,
                 max_seq_len=4096,
                 force_flash=False,
-                dropout=0.05,
-                drop_path=0.05,
+                dropout=0.2,
+                drop_path=0.1,
             ),
         )
 
         model = SwinImageToText(cfg)
         if resume_from is not None:
-            model.load_state_dict(torch.load(resume_from, map_location="cpu"))
+            model.load_state_dict(torch.load(Path(resume_from) / "model.pt", map_location="cpu"))
 
         return model, tokenizer, cfg
