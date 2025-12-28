@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from gradientlab.logging_utils.log_model_params import pretty_print_model
 
 
 def _to_2tuple(x: int | Tuple[int, int]) -> Tuple[int, int]:
@@ -127,7 +126,7 @@ class WindowAttentionV2(nn.Module):
         self.attn_drop = float(attn_drop)
 
         Wh, Ww = self.window_size
-        N = Wh * Ww
+        #N = Wh * Ww
 
         # relative position index (shared by both V1 table and V2 CPB)
         coords_h = torch.arange(Wh)
@@ -147,6 +146,11 @@ class WindowAttentionV2(nn.Module):
         self.register_buffer(
             "relative_position_index", relative_position_index, persistent=False
         )
+
+        if self.use_cosine_attention:
+            self.logit_scale = nn.Parameter(torch.log(torch.ones(num_heads, 1, 1) * 10.0))
+        else:
+            self.logit_scale = None
 
         if self.use_cpb:
             # relative coords table for CPB MLP
@@ -175,15 +179,20 @@ class WindowAttentionV2(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Linear(512, num_heads, bias=False),
             )
-            self.logit_scale = nn.Parameter(
-                torch.log(torch.ones(num_heads, 1, 1) * 10.0)
-            )
         else:
             self.relative_position_bias_table = nn.Parameter(
                 torch.zeros((2 * Wh - 1) * (2 * Ww - 1), num_heads)
             )
             nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
             self.logit_scale = None
+        
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def _relative_position_bias(
         self, dtype: torch.dtype, device: torch.device
@@ -311,6 +320,10 @@ class SwinTransformerBlock(nn.Module):
         self.drop_path = DropPath(drop_path)
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = SwiGLU(dim, int(dim * mlp_ratio), dropout=drop)
+        # Cache storage
+        self.register_buffer("attn_mask", None, persistent=False)
+        self.last_hw = (0, 0) # Track last seen resolution
+
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         B, L, C = x.shape
@@ -330,9 +343,20 @@ class SwinTransformerBlock(nn.Module):
             shifted_x = torch.roll(
                 x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2)
             )
-            attn_mask = compute_shifted_window_mask(
-                Hp, Wp, ws, self.shift_size, device=x.device
-            )
+            
+            # --- CACHING LOGIC START ---
+            if self.attn_mask is None or self.last_hw != (Hp, Wp):
+                # Generate new mask only if resolution changed or mask missing
+                # We use torch.no_grad() to ensure this generation isn't tracked
+                with torch.no_grad():
+                    mask = compute_shifted_window_mask(
+                        Hp, Wp, ws, self.shift_size, device=x.device
+                    )
+                    self.attn_mask = mask
+                    self.last_hw = (Hp, Wp)
+            
+            attn_mask = self.attn_mask
+            # --- CACHING LOGIC END ---
         else:
             shifted_x, attn_mask = x, None
 
@@ -576,6 +600,8 @@ class FlashMHA(nn.Module):
         is_causal: bool = False,
         kv_cache: Optional[Dict[str, torch.Tensor]] = None,
         cache_prefix: str = "self",
+        precomputed_k: Optional[torch.Tensor] = None,
+        precomputed_v: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         if x_kv is None:
             x_kv = x_q
@@ -586,9 +612,18 @@ class FlashMHA(nn.Module):
         q = (
             self.q_proj(x_q).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
         )  # (B,h,L,hd)
-        k = self.k_proj(x_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
 
+        if precomputed_k is not None and precomputed_v is not None:
+            k = precomputed_k
+            v = precomputed_v
+        else:
+            # Standard logic (Self-Attn or non-optimized Cross-Attn)
+            if x_kv is None:
+                x_kv = x_q
+            S = x_kv.shape[1]
+            k = self.k_proj(x_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+            v = self.v_proj(x_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
+        
         if kv_cache is not None:
             k_key, v_key = f"{cache_prefix}_k", f"{cache_prefix}_v"
             if k_key in kv_cache and v_key in kv_cache:
@@ -640,6 +675,8 @@ class DecoderBlock(nn.Module):
         self_attn_mask: Optional[torch.Tensor] = None,
         kv_cache: Optional[Dict[str, torch.Tensor]],
         layer_idx: int,
+        cross_k: Optional[torch.Tensor] = None,
+        cross_v: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         h = self.norm1(x)
         h, kv_cache = self.self_attn(
@@ -653,7 +690,7 @@ class DecoderBlock(nn.Module):
         x = x + self.dp1(h)
 
         h = self.norm2(x)
-        h, _ = self.cross_attn(h, memory, is_causal=False, kv_cache=None)
+        h, _ = self.cross_attn(h, memory, is_causal=False, kv_cache=None, precomputed_k=cross_k, precomputed_v=cross_v)
         x = x + self.dp2(h)
 
         x = x + self.dp3(self.mlp(self.norm3(x)))
@@ -675,10 +712,10 @@ class DecoderConfig:
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, cfg: DecoderConfig):
+    def __init__(self, cfg: DecoderConfig, padding_idx: int):
         super().__init__()
         self.cfg = cfg
-        self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.d_model, padding_idx=padding_idx)
         self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.d_model)
         self.drop = nn.Dropout(cfg.dropout)
 
@@ -698,8 +735,7 @@ class TransformerDecoder(nn.Module):
         )
         self.norm = nn.LayerNorm(cfg.d_model)
         self.lm_head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
-        if cfg.tie_embeddings:
-            self.lm_head.weight = self.tok_emb.weight
+        
 
     @staticmethod
     def _build_causal_padding_mask(attention_mask: torch.Tensor) -> torch.Tensor:
@@ -750,6 +786,7 @@ class TransformerDecoder(nn.Module):
         kv_cache: Optional[Dict[str, torch.Tensor]] = None,
         use_cache: bool = False,
         pos_offset: int = 0,
+        cross_kv_list: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         B, T = input_ids.shape
         assert pos_offset + T <= self.cfg.max_seq_len, "position exceeds max_seq_len"
@@ -778,13 +815,14 @@ class TransformerDecoder(nn.Module):
         )
 
         for i, blk in enumerate(self.blocks):
+            ck, cv = (None, None)
+            if cross_kv_list is not None:
+                ck, cv = cross_kv_list[i]
+            
             x, cache = blk(
-                x,
-                memory,
-                is_causal=causal_hint,
-                self_attn_mask=self_attn_mask,
-                kv_cache=cache,
-                layer_idx=i,
+                x, memory, is_causal=causal_hint, self_attn_mask=self_attn_mask,
+                kv_cache=cache, layer_idx=i,
+                cross_k=ck, cross_v=cv
             )
 
         x = self.norm(x)
@@ -809,13 +847,15 @@ class SwinImageToText(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.encoder = SwinEncoder(cfg.encoder)
-        self.decoder = TransformerDecoder(cfg.decoder)
+        self.decoder = TransformerDecoder(cfg.decoder, cfg.pad_token_id)
         self.enc_proj = (
             nn.Linear(self.encoder.out_dim, cfg.decoder.d_model, bias=False)
             if (cfg.enc_to_dec_proj and self.encoder.out_dim != cfg.decoder.d_model)
             else nn.Identity()
         )
         self.apply(self._init_weights)
+        if cfg.decoder.tie_embeddings:
+            self.decoder.lm_head.weight = self.decoder.tok_emb.weight
 
     def encode(self, pixel_values: torch.Tensor) -> torch.Tensor:
         return self.enc_proj(self.encoder(pixel_values))
@@ -826,7 +866,7 @@ class SwinImageToText(nn.Module):
         input_ids: torch.Tensor,
         labels: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ):
         memory = self.encode(pixel_values)
         logits, _ = self.decoder(
             input_ids,
@@ -866,6 +906,20 @@ class SwinImageToText(nn.Module):
         tokens = torch.full((B, 1), bos_token_id, dtype=torch.long, device=device)
         cache: Dict[str, torch.Tensor] = {}
 
+        # Pre-compute Cross-Attention Keys/Values for ALL layers once.
+        # This saves L * N_gen projections.
+        cross_kv_list = []
+        for block in self.decoder.blocks:
+            # We manually project memory using the block's cross_attn layers
+            # Shape: (B, S, num_heads, head_dim) -> transpose(1,2) -> (B, heads, S, head_dim)
+            S = memory.shape[1]
+            k_proj = block.cross_attn.k_proj(memory) # type: ignore
+            v_proj = block.cross_attn.v_proj(memory) # type: ignore
+            
+            k = k_proj.view(B, S, block.cross_attn.num_heads, block.cross_attn.head_dim).transpose(1, 2) # type: ignore
+            v = v_proj.view(B, S, block.cross_attn.num_heads, block.cross_attn.head_dim).transpose(1, 2) # type: ignore
+            cross_kv_list.append((k, v))
+
         for _ in range(max_new_tokens):
             logits, cache = self.decoder(
                 tokens[:, -1:],
@@ -873,6 +927,7 @@ class SwinImageToText(nn.Module):
                 kv_cache=cache,
                 use_cache=True,
                 pos_offset=tokens.shape[1] - 1,
+                cross_kv_list=cross_kv_list
             )
             next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
             tokens = torch.cat([tokens, next_token], dim=1)
@@ -883,9 +938,13 @@ class SwinImageToText(nn.Module):
 
     def _init_weights(self, module):
         std = 0.02
+        if isinstance(module, WindowAttentionV2):
+            # Do NOT re-init relative_position_bias_table or cpb_mlp here
+            return
+        
         if isinstance(module, nn.Embedding):
             nn.init.normal_(
-                module.weight, mean=0.0, std=1 / math.sqrt(self.cfg.encoder.embed_dim)
+                module.weight, mean=0.0, std=1 / math.sqrt(module.embedding_dim)
             )
             module.weight.data[self.cfg.pad_token_id].zero_()
         elif isinstance(module, nn.Linear):

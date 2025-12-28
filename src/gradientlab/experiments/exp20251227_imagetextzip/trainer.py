@@ -4,12 +4,10 @@ import sys
 from tqdm import tqdm
 import trackio
 
-from gradientlab.experiments.exp20251118_0_lm_30m.exp_config import (
+from gradientlab.experiments.exp20251227_imagetextzip.exp_config import (
     ExpConfig,
 )
-from gradientlab.experiments.exp20251118_0_lm_30m.modeling.model_cfg import (
-    ModelConfig,
-)
+
 from datasets import load_from_disk, DatasetDict
 from torch.utils.data import DataLoader
 import torch
@@ -17,6 +15,7 @@ import random
 import numpy as np
 from torch.optim.adamw import AdamW
 from gradientlab.experiments.exp20251227_imagetextzip.modeling.model import (
+    ModelConfig,
     SwinImageToText,
 )
 from gradientlab.experiments.exp20251227_imagetextzip.torch_dataset import (
@@ -131,7 +130,7 @@ class Trainer:
     def _build_dataloaders(self):
         self.collate_fn = Collate(self.tokenizer)
         ds = load_from_disk(self.exp_cfg.ds_name)
-
+        assert isinstance(ds, DatasetDict)
         self.ds_train, self.dl_train = self._build_dataloader(ds, "train")
         self.ds_val, self.dl_val = self._build_dataloader(ds, "test")
         self.dl_len = len(self.dl_train)
@@ -220,7 +219,7 @@ class Trainer:
         was_model_training = self.model.training
         self.model.eval()
 
-        i = random.randint(0, len(self.ds_val))
+        i = random.randrange(0, len(self.ds_val))
         sample = self.ds_val[i]
         lbl = sample["text"]
 
