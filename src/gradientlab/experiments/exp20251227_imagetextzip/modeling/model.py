@@ -414,8 +414,8 @@ class PatchMerging(nn.Module):
 
     def __init__(self, input_dim: int):
         super().__init__()
-        self.norm = nn.LayerNorm(4 * input_dim)
         self.reduction = nn.Linear(4 * input_dim, 2 * input_dim, bias=False)
+        self.norm = nn.LayerNorm(2 * input_dim)
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> Tuple[torch.Tensor, int, int]:
         B, L, C = x.shape
@@ -434,8 +434,8 @@ class PatchMerging(nn.Module):
         x2 = x[:, 0::2, 1::2, :]
         x3 = x[:, 1::2, 1::2, :]
         x = torch.cat([x0, x1, x2, x3], dim=-1).view(B, Hn * Wn, 4 * C)
-        x = self.norm(x)
         x = self.reduction(x)
+        x = self.norm(x)
         return x, Hn, Wn
 
 
