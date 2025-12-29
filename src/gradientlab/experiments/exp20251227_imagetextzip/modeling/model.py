@@ -243,7 +243,7 @@ class WindowAttentionV2(nn.Module):
 
         if attn_mask is not None:
             nW = attn_mask.shape[0]
-            assert B_ % nW == 0
+            # assert B_ % nW == 0
             B = B_ // nW
             attn_mask = attn_mask.to(device=q.device, dtype=q.dtype).unsqueeze(
                 1
@@ -327,7 +327,7 @@ class SwinTransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         B, L, C = x.shape
-        assert L == H * W
+        # assert L == H * W
 
         shortcut = x
         x = self.norm1(x).view(B, H, W, C)
@@ -419,7 +419,7 @@ class PatchMerging(nn.Module):
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> Tuple[torch.Tensor, int, int]:
         B, L, C = x.shape
-        assert L == H * W
+        # assert L == H * W
         x = x.view(B, H, W, C)
 
         pad_r = W % 2
@@ -716,7 +716,7 @@ class TransformerDecoder(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.d_model, padding_idx=padding_idx)
-        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.d_model)
+        #self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.d_model)
         self.drop = nn.Dropout(cfg.dropout)
 
         dpr = [x.item() for x in torch.linspace(0, cfg.drop_path, cfg.n_layers)]
@@ -789,14 +789,14 @@ class TransformerDecoder(nn.Module):
         cross_kv_list: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         B, T = input_ids.shape
-        assert pos_offset + T <= self.cfg.max_seq_len, "position exceeds max_seq_len"
+        #assert pos_offset + T <= self.cfg.max_seq_len, "position exceeds max_seq_len"
 
-        pos = (
+        """ pos = (
             (pos_offset + torch.arange(T, device=input_ids.device))
             .unsqueeze(0)
             .expand(B, T)
-        )
-        x = self.tok_emb(input_ids) + self.pos_emb(pos)
+        ) """
+        x = self.tok_emb(input_ids) # + self.pos_emb(pos)
         x = self.drop(x)
 
         # If attention_mask is provided, fuse causal+padding into a boolean mask and set is_causal=False.

@@ -100,7 +100,7 @@ class Trainer:
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
-            norm_pre_clip = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
+            norm_pre_clip = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.scheduler.step()
@@ -193,6 +193,7 @@ class Trainer:
         # Fast-forward to current position
         for _ in range(self.dl_len * self.epoch_current):
             self.scheduler.step()
+
 
     def _compile(self):
         if self.device.type in ["cuda", "mps"]:
@@ -291,7 +292,7 @@ class Trainer:
 
         print("=== RESTORING TRAINING STATE ===")
         restore_path = Path(self.exp_cfg.resume_from)
-        restore_weights(restore_path, optim=self.optimizer, scaler=self.scaler)
+        #restore_weights(restore_path, optim=self.optimizer, scaler=self.scaler)
 
         metadata = json.loads((restore_path / "meta.json").read_bytes())
         self.epoch_current = metadata["epoch_current"]
