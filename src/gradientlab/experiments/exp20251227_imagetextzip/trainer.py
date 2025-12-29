@@ -53,6 +53,7 @@ class Trainer:
         self.exp_cfg = exp_cfg
         self.bos_token_id = tokenizer.convert_tokens_to_ids("<|im_start|>")  # type: ignore
         self.eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")  # type: ignore
+        self.best_eval_loss = float("inf")
 
         self.device = torch.device(exp_cfg.device)
         self.model.to(self.device)  # type: ignore
@@ -126,7 +127,17 @@ class Trainer:
 
             if i % self.exp_cfg.save_steps == 0:
                 self._generate()
-                self._save_state()
+
+        eval_loss = self._eval_loss()
+        trackio.log(
+            {
+                "epoch": epoch_idx,
+                "eval_loss": float(eval_loss),
+            }
+        )
+        if eval_loss < self.best_eval_loss:
+            self.best_eval_loss = eval_loss
+            self._save_state(epoch_current=epoch_idx + 1)
 
     def _build_dataloaders(self):
         self.collate_fn = Collate(self.tokenizer)
@@ -187,7 +198,7 @@ class Trainer:
         if self.device.type in ["cuda", "mps"]:
             self.model.compile()
 
-    def _save_state(self):
+    def _save_state(self, epoch_current=None):
         exp_dir = self.exp_cfg.exp_dir
         hf_save_dir = exp_dir / "model"
         hf_save_dir.mkdir(exist_ok=True, parents=True)
@@ -210,7 +221,10 @@ class Trainer:
             json.dumps(
                 {
                     "step_current": self.step_current,
-                    "epoch_current": self.epoch_current,
+                    "epoch_current": (
+                        self.epoch_current if epoch_current is None else epoch_current
+                    ),
+                    "best_eval_loss": self.best_eval_loss,
                 },
                 indent=2,
             )
@@ -239,6 +253,38 @@ class Trainer:
         if was_model_training:
             self.model.train()
 
+    def _eval_loss(self) -> float:
+        was_model_training = self.model.training
+        self.model.eval()
+        total_loss = 0.0
+        num_batches = 0
+
+        pbar = tqdm(self.dl_val, desc="Eval", dynamic_ncols=True)
+        with torch.no_grad():
+            for batch in pbar:
+                batch = {
+                    k: v.to(self.device, non_blocking=True) for k, v in batch.items()
+                }
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self.dtype,
+                    enabled=self.is_mixed_precision_on,
+                ):
+                    output = self.model(
+                        **batch,
+                    )
+                    loss = output["loss"]
+                total_loss += float(loss.detach())
+                num_batches += 1
+                pbar.set_postfix({"loss": f"{loss.detach():.4f}"})
+
+        if was_model_training:
+            self.model.train()
+
+        if num_batches == 0:
+            return float("inf")
+        return total_loss / num_batches
+
     def _restore_training_state(self):
         if self.exp_cfg.resume_from is None:
             return
@@ -250,3 +296,4 @@ class Trainer:
         metadata = json.loads((restore_path / "meta.json").read_bytes())
         self.epoch_current = metadata["epoch_current"]
         self.step_current = metadata["step_current"]
+        self.best_eval_loss = metadata.get("best_eval_loss", float("inf"))
