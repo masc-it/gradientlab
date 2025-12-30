@@ -71,7 +71,7 @@ def compute_shifted_window_mask(
     H: int, W: int, window_size: int, shift_size: int, device: torch.device
 ) -> torch.Tensor:
     """
-    Float mask (nW, N, N) with 0 or -inf to prevent attention across shifted-window boundaries.
+    Float mask (nW, N, N) with 0 or -100 to prevent attention across shifted-window boundaries.
     """
     ws = window_size
     img_mask = torch.zeros((1, H, W, 1), device=device)
@@ -85,7 +85,7 @@ def compute_shifted_window_mask(
 
     mask_windows = window_partition(img_mask, ws).view(-1, ws * ws)  # (nW, N)
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-    return attn_mask.masked_fill(attn_mask != 0, float("-inf")).masked_fill(
+    return attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(
         attn_mask == 0, 0.0
     )
 
@@ -108,6 +108,7 @@ class WindowAttentionV2(nn.Module):
         use_cosine_attention: bool = True,
         use_cpb: bool = True,
         force_flash: bool = False,
+        pretrained_window_size: int | Tuple[int, int] = 0,
     ):
         super().__init__()
         self.dim = dim
@@ -119,6 +120,7 @@ class WindowAttentionV2(nn.Module):
         self.force_flash = bool(force_flash)
         self.use_cosine_attention = bool(use_cosine_attention)
         self.use_cpb = bool(use_cpb)
+        self.pretrained_window_size = _to_2tuple(pretrained_window_size)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim, bias=True)
@@ -129,20 +131,7 @@ class WindowAttentionV2(nn.Module):
         #N = Wh * Ww
 
         # relative position index (shared by both V1 table and V2 CPB)
-        coords_h = torch.arange(Wh)
-        coords_w = torch.arange(Ww)
-        coords = torch.stack(
-            torch.meshgrid(coords_h, coords_w, indexing="ij")
-        )  # (2,Wh,Ww)
-        coords_flatten = coords.flatten(1)  # (2,N)
-        relative_coords = (
-            coords_flatten[:, :, None] - coords_flatten[:, None, :]
-        )  # (2,N,N)
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # (N,N,2)
-        relative_coords[:, :, 0] += Wh - 1
-        relative_coords[:, :, 1] += Ww - 1
-        relative_coords[:, :, 0] *= 2 * Ww - 1
-        relative_position_index = relative_coords.sum(-1)  # (N,N)
+        relative_position_index = self._build_relative_position_index(Wh, Ww)
         self.register_buffer(
             "relative_position_index", relative_position_index, persistent=False
         )
@@ -154,22 +143,7 @@ class WindowAttentionV2(nn.Module):
 
         if self.use_cpb:
             # relative coords table for CPB MLP
-            rch = torch.arange(-(Wh - 1), Wh, dtype=torch.float32)
-            rcw = torch.arange(-(Ww - 1), Ww, dtype=torch.float32)
-            rel_coords_table = (
-                torch.stack(torch.meshgrid(rch, rcw, indexing="ij"))
-                .permute(1, 2, 0)
-                .contiguous()
-                .view(-1, 2)
-            )
-            rel_coords_table[:, 0] /= max(Wh - 1, 1)
-            rel_coords_table[:, 1] /= max(Ww - 1, 1)
-            rel_coords_table *= 8
-            rel_coords_table = (
-                torch.sign(rel_coords_table)
-                * torch.log2(torch.abs(rel_coords_table) + 1.0)
-                / math.log2(8.0)
-            )
+            rel_coords_table = self._build_relative_coords_table(Wh, Ww)
             self.register_buffer(
                 "relative_coords_table", rel_coords_table, persistent=False
             )
@@ -194,30 +168,102 @@ class WindowAttentionV2(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def _relative_position_bias(
-        self, dtype: torch.dtype, device: torch.device
+    def _build_relative_coords_table(
+        self, Wh: int, Ww: int, *, device: Optional[torch.device] = None
     ) -> torch.Tensor:
-        Wh, Ww = self.window_size
+        rch = torch.arange(-(Wh - 1), Wh, dtype=torch.float32, device=device)
+        rcw = torch.arange(-(Ww - 1), Ww, dtype=torch.float32, device=device)
+        rel_coords_table = (
+            torch.stack(torch.meshgrid(rch, rcw, indexing="ij"))
+            .permute(1, 2, 0)
+            .contiguous()
+            .view(-1, 2)
+        )
+        pretrain_h, pretrain_w = self.pretrained_window_size
+        if pretrain_h > 0:
+            rel_coords_table[:, 0] /= max(pretrain_h - 1, 1)
+        else:
+            rel_coords_table[:, 0] /= max(Wh - 1, 1)
+        if pretrain_w > 0:
+            rel_coords_table[:, 1] /= max(pretrain_w - 1, 1)
+        else:
+            rel_coords_table[:, 1] /= max(Ww - 1, 1)
+        rel_coords_table *= 8
+        rel_coords_table = (
+            torch.sign(rel_coords_table)
+            * torch.log2(torch.abs(rel_coords_table) + 1.0)
+            / math.log2(8.0)
+        )
+        return rel_coords_table
+
+    def _build_relative_position_index(
+        self, Wh: int, Ww: int, *, device: Optional[torch.device] = None
+    ) -> torch.Tensor:
+        coords_h = torch.arange(Wh, device=device)
+        coords_w = torch.arange(Ww, device=device)
+        coords = torch.stack(
+            torch.meshgrid(coords_h, coords_w, indexing="ij")
+        )  # (2,Wh,Ww)
+        coords_flatten = coords.flatten(1)  # (2,N)
+        relative_coords = (
+            coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        )  # (2,N,N)
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # (N,N,2)
+        relative_coords[:, :, 0] += Wh - 1
+        relative_coords[:, :, 1] += Ww - 1
+        relative_coords[:, :, 0] *= 2 * Ww - 1
+        return relative_coords.sum(-1)  # (N,N)
+
+    def _relative_position_bias(
+        self,
+        dtype: torch.dtype,
+        device: torch.device,
+        *,
+        window_size: Optional[Tuple[int, int]] = None,
+    ) -> torch.Tensor:
+        if window_size is None:
+            Wh, Ww = self.window_size
+            rel_coords_table = self.relative_coords_table if self.use_cpb else None
+            relative_position_index = self.relative_position_index
+        else:
+            Wh, Ww = window_size
+            if (Wh, Ww) == self.window_size:
+                rel_coords_table = self.relative_coords_table if self.use_cpb else None
+                relative_position_index = self.relative_position_index
+            else:
+                if not self.use_cpb:
+                    raise ValueError("Dynamic window sizes require use_cpb=True.")
+                rel_coords_table = self._build_relative_coords_table(
+                    Wh, Ww, device=device
+                )
+                relative_position_index = self._build_relative_position_index(
+                    Wh, Ww, device=device
+                )
         N = Wh * Ww
         if self.use_cpb:
             bias_table = self.cpb_mlp(
-                self.relative_coords_table.to(device=device, dtype=dtype)
+                rel_coords_table.to(device=device, dtype=dtype)
             )  # (M, heads)
-            bias = bias_table[self.relative_position_index.view(-1)].view(
+            bias = bias_table[relative_position_index.view(-1)].view(
                 N, N, self.num_heads
             )
+            bias = 16.0 * torch.sigmoid(bias)
             return bias.permute(2, 0, 1).contiguous().unsqueeze(0)  # (1, heads, N, N)
         bias = self.relative_position_bias_table[
-            self.relative_position_index.view(-1)
+            relative_position_index.view(-1)
         ].view(N, N, self.num_heads)
         return bias.permute(2, 0, 1).contiguous().unsqueeze(0)
 
     def forward(
-        self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None
+        self,
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        *,
+        window_size: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         """
         x: (B_, N, C) where B_ = B*nW, N=ws*ws
-        attn_mask: (nW, N, N) with 0 or -inf (shifted window mask), or None.
+        attn_mask: (nW, N, N) with 0 or -100 (shifted window mask), or None.
         """
         B_, N, C = x.shape
         qkv = (
@@ -238,7 +284,7 @@ class WindowAttentionV2(nn.Module):
             scale = None  # default 1/sqrt(head_dim)
 
         bias = self._relative_position_bias(
-            dtype=q.dtype, device=q.device
+            dtype=q.dtype, device=q.device, window_size=window_size
         )  # (1, heads, N, N)
 
         if attn_mask is not None:
@@ -283,7 +329,7 @@ class WindowAttentionV2(nn.Module):
 
 
 class SwinTransformerBlock(nn.Module):
-    """Pre-norm Swin block (W-MSA or SW-MSA + SwiGLU FFN)."""
+    """Post-norm Swin block (W-MSA or SW-MSA + SwiGLU FFN)."""
 
     def __init__(
         self,
@@ -299,6 +345,7 @@ class SwinTransformerBlock(nn.Module):
         use_cosine_attention: bool = True,
         use_cpb: bool = True,
         force_flash: bool = False,
+        pretrained_window_size: int | Tuple[int, int] = 0,
     ):
         super().__init__()
         self.dim = dim
@@ -316,13 +363,14 @@ class SwinTransformerBlock(nn.Module):
             use_cosine_attention=use_cosine_attention,
             use_cpb=use_cpb,
             force_flash=force_flash,
+            pretrained_window_size=pretrained_window_size,
         )
         self.drop_path = DropPath(drop_path)
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = SwiGLU(dim, int(dim * mlp_ratio), dropout=drop)
         # Cache storage
         self.register_buffer("attn_mask", None, persistent=False)
-        self.last_hw = (0, 0) # Track last seen resolution
+        self.last_mask_key = None
 
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
@@ -330,43 +378,53 @@ class SwinTransformerBlock(nn.Module):
         # assert L == H * W
 
         shortcut = x
-        x = self.norm1(x).view(B, H, W, C)
+        x = x.view(B, H, W, C)
 
-        ws = self.window_size
-        pad_r = (ws - W % ws) % ws
-        pad_b = (ws - H % ws) % ws
+        window_size = self.window_size
+        shift_size = self.shift_size
+        if min(H, W) <= window_size:
+            window_size = min(H, W)
+            shift_size = 0
+
+        pad_r = (window_size - W % window_size) % window_size
+        pad_b = (window_size - H % window_size) % window_size
         if pad_r or pad_b:
             x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
         Hp, Wp = x.shape[1], x.shape[2]
 
-        if self.shift_size > 0:
+        if shift_size > 0:
             shifted_x = torch.roll(
-                x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2)
+                x, shifts=(-shift_size, -shift_size), dims=(1, 2)
             )
             
             # --- CACHING LOGIC START ---
-            if self.attn_mask is None or self.last_hw != (Hp, Wp):
+            mask_key = (Hp, Wp, window_size, shift_size)
+            if self.attn_mask is None or self.last_mask_key != mask_key:
                 # Generate new mask only if resolution changed or mask missing
                 # We use torch.no_grad() to ensure this generation isn't tracked
                 with torch.no_grad():
                     mask = compute_shifted_window_mask(
-                        Hp, Wp, ws, self.shift_size, device=x.device
+                        Hp, Wp, window_size, shift_size, device=x.device
                     )
                     self.attn_mask = mask
-                    self.last_hw = (Hp, Wp)
+                    self.last_mask_key = mask_key
             
             attn_mask = self.attn_mask
             # --- CACHING LOGIC END ---
         else:
             shifted_x, attn_mask = x, None
 
-        x_windows = window_partition(shifted_x, ws).view(-1, ws * ws, C)
-        attn_windows = self.attn(x_windows, attn_mask=attn_mask).view(-1, ws, ws, C)
-        shifted_x = window_reverse(attn_windows, ws, Hp, Wp)
+        x_windows = window_partition(shifted_x, window_size).view(
+            -1, window_size * window_size, C
+        )
+        attn_windows = self.attn(
+            x_windows, attn_mask=attn_mask, window_size=_to_2tuple(window_size)
+        ).view(-1, window_size, window_size, C)
+        shifted_x = window_reverse(attn_windows, window_size, Hp, Wp)
 
-        if self.shift_size > 0:
+        if shift_size > 0:
             x = torch.roll(
-                shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2)
+                shifted_x, shifts=(shift_size, shift_size), dims=(1, 2)
             )
         else:
             x = shifted_x
@@ -375,8 +433,8 @@ class SwinTransformerBlock(nn.Module):
             x = x[:, :H, :W, :].contiguous()
 
         x = x.view(B, H * W, C)
-        x = shortcut + self.drop_path(x)
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x = shortcut + self.drop_path(self.norm1(x))
+        x = x + self.drop_path(self.norm2(self.mlp(x)))
         return x
 
 
@@ -399,10 +457,10 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, int, int]:
         B, C, H, W = x.shape
-        pad_h = (self.patch_size - H % self.patch_size) % self.patch_size
-        pad_w = (self.patch_size - W % self.patch_size) % self.patch_size
-        if pad_h or pad_w:
-            x = F.pad(x, (0, pad_w, 0, pad_h))
+        if H % self.patch_size != 0 or W % self.patch_size != 0:
+            raise ValueError(
+                f"Input size ({H}x{W}) must be divisible by patch size {self.patch_size}."
+            )
         x = self.proj(x)  # (B, D, H', W')
         Ht, Wt = x.shape[2], x.shape[3]
         x = x.flatten(2).transpose(1, 2).contiguous()  # (B, H'*W', D)
@@ -422,12 +480,9 @@ class PatchMerging(nn.Module):
         # assert L == H * W
         x = x.view(B, H, W, C)
 
-        pad_r = W % 2
-        pad_b = H % 2
-        if pad_r or pad_b:
-            x = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
-        Hp, Wp = x.shape[1], x.shape[2]
-        Hn, Wn = Hp // 2, Wp // 2
+        if H % 2 != 0 or W % 2 != 0:
+            raise ValueError(f"PatchMerging requires even H/W, got {H}x{W}.")
+        Hn, Wn = H // 2, W // 2
 
         x0 = x[:, 0::2, 0::2, :]
         x1 = x[:, 1::2, 0::2, :]
@@ -446,6 +501,7 @@ class SwinStage(nn.Module):
         depth: int,
         num_heads: int,
         window_size: int,
+        pretrained_window_size: int,
         mlp_ratio: float,
         drop: float,
         attn_drop: float,
@@ -473,9 +529,17 @@ class SwinStage(nn.Module):
                     use_cosine_attention=use_cosine_attention,
                     use_cpb=use_cpb,
                     force_flash=force_flash,
+                    pretrained_window_size=pretrained_window_size,
                 )
             )
         self.downsample = PatchMerging(dim) if downsample else None
+
+    def _init_respostnorm(self) -> None:
+        for blk in self.blocks:
+            nn.init.constant_(blk.norm1.bias, 0)
+            nn.init.constant_(blk.norm1.weight, 0)
+            nn.init.constant_(blk.norm2.bias, 0)
+            nn.init.constant_(blk.norm2.weight, 0)
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> Tuple[torch.Tensor, int, int]:
         for blk in self.blocks:
@@ -492,6 +556,7 @@ class SwinEncoderConfig:
     depths: Tuple[int, int, int, int] = (2, 2, 6, 2)
     num_heads: Tuple[int, int, int, int] = (3, 6, 12, 24)
     window_size: int = 8
+    pretrained_window_sizes: Tuple[int, int, int, int] = (0, 0, 0, 0)
     mlp_ratio: float = 4.0
     drop: float = 0.0
     attn_drop: float = 0.0
@@ -508,6 +573,7 @@ class SwinEncoder(nn.Module):
         self.patch_embed = PatchEmbed(
             patch_size=cfg.patch_size, in_chans=1, embed_dim=cfg.embed_dim, norm=True
         )
+        self.pos_drop = nn.Dropout(cfg.drop)
 
         total_depth = sum(cfg.depths)
         dpr = [x.item() for x in torch.linspace(0, cfg.drop_path, total_depth)]
@@ -516,12 +582,18 @@ class SwinEncoder(nn.Module):
         self.stages = nn.ModuleList()
         dim = cfg.embed_dim
         for i, depth in enumerate(cfg.depths):
+            pretrained_window_size = (
+                cfg.pretrained_window_sizes[i]
+                if i < len(cfg.pretrained_window_sizes)
+                else 0
+            )
             self.stages.append(
                 SwinStage(
                     dim=dim,
                     depth=depth,
                     num_heads=cfg.num_heads[i],
                     window_size=cfg.window_size,
+                    pretrained_window_size=pretrained_window_size,
                     mlp_ratio=cfg.mlp_ratio,
                     drop=cfg.drop,
                     attn_drop=cfg.attn_drop,
@@ -538,9 +610,12 @@ class SwinEncoder(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
         self.out_dim = dim
+        for stage in self.stages:
+            stage._init_respostnorm()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, H, W = self.patch_embed(x)
+        x = self.pos_drop(x)
         for stage in self.stages:
             x, H, W = stage(x, H, W)
         return self.norm(x)  # (B, S, C)

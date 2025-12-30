@@ -55,11 +55,11 @@ class GPTFactory:
             pad_token_id=tokenizer.pad_token_id,  # type: ignore
             encoder=SwinEncoderConfig(
                 patch_size=8,
-                embed_dim=48,
+                embed_dim=32,
                 depths=(2, 2, 2, 4),
                 num_heads=(2, 2, 4, 4),
-                drop=0.1,
-                attn_drop=0.1,
+                drop=0.0,
+                attn_drop=0.0,
                 drop_path=0.1,
                 window_size=8,
                 force_flash=False,
@@ -68,10 +68,10 @@ class GPTFactory:
                 vocab_size=tokenizer.total_vocab_size,
                 d_model=256,
                 n_layers=1,
-                n_heads=8,
+                n_heads=4,
                 max_seq_len=4096,
                 force_flash=False,
-                dropout=0.1,
+                dropout=0.0,
                 drop_path=0.0,
             ),
         )
