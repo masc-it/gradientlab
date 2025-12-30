@@ -356,7 +356,7 @@ class Trainer:
         avg_ce_loss = total_ce_loss / num_batches
         avg_count_loss = total_count_loss / num_batches
         char_accuracy = total_char_correct / max(total_char_count, 1)
-        count_mae = total_count_mae / max(total_char_count, 1)  # Per-character basis
+        count_mae = total_count_mae / num_batches  # Per-sample MAE
 
         return {
             "eval_loss": avg_loss,

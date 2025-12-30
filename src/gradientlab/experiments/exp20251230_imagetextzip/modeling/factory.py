@@ -65,8 +65,8 @@ class ModelFactory:
             vocab_size=512,
             pad_token_id=pad_token_id,
             num_slots=1024,
-            label_smoothing=0.01,
-            counter_loss_weight=0.5,  # Reduced from 1.0 to stabilize gradients
+            label_smoothing=0.1,  # Increased from 0.01 to prevent overconfident predictions
+            counter_loss_weight=0.1,  # Reduced from 0.5 to stabilize gradients
         )
 
         # Instantiate model

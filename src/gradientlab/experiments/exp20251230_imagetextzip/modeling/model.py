@@ -423,20 +423,19 @@ class SlotAttentionBlock(nn.Module):
         # Project memory if needed
         memory = self.memory_proj(memory)  # (B, S, d_model)
 
-        # Cross-attention: slots attend to CNN features
-        # Q from slots, K/V from memory
+        # Cross-attention with pre-norm
+        normed = self.norm1(slot_queries)
         attn_out = self.cross_attn(
-            x_q=slot_queries,
+            x_q=normed,
             x_kv=memory,
-            is_causal=False,  # Cross-attention is never causal
+            is_causal=False,
         )
         slot_queries = slot_queries + self.drop_path1(attn_out)
-        slot_queries = self.norm1(slot_queries)
 
-        # FFN
-        ffn_out = self.ffn(slot_queries)
+        # FFN with pre-norm
+        normed = self.norm2(slot_queries)
+        ffn_out = self.ffn(normed)
         slot_queries = slot_queries + self.drop_path2(ffn_out)
-        slot_queries = self.norm2(slot_queries)
 
         return slot_queries
 
@@ -506,8 +505,16 @@ class ImageTextSlotModel(nn.Module):
 
         # Learnable slot queries
         self.slot_queries = nn.Parameter(
-            torch.randn(1, cfg.num_slots, slot_dim) * 0.015
+            torch.zeros(1, cfg.num_slots, slot_dim)
         )
+        nn.init.trunc_normal_(self.slot_queries, std=0.02)
+
+        # Add 1D positional embeddings for slot ordering
+        self.slot_pos_embed = nn.Parameter(
+            torch.zeros(1, cfg.num_slots, slot_dim)
+        )
+        # Initialize positional embeddings directly (apply() doesn't catch module-level params)
+        nn.init.trunc_normal_(self.slot_pos_embed, std=0.02)
 
         # Slot attention block
         self.slot_attention = SlotAttentionBlock(cfg.slot_attention, cnn_dim=slot_dim)
@@ -524,42 +531,16 @@ class ImageTextSlotModel(nn.Module):
         # Apply weight initialization
         self.apply(self._init_weights)
 
-        # Apply residual scaling for gradient stability in deep networks
-        self._apply_residual_scaling()
-
-    def _apply_residual_scaling(self):
-        """Scale residual connections to stabilize gradients in deep networks."""
-        # Calculate scaling factor: 1/sqrt(2 * num_residual_layers)
-        num_layers = sum(self.cfg.encoder.depths) + 1  # CNN blocks + slot attention
-        residual_scale = 1.0 / math.sqrt(2 * num_layers)
-
-        # Scale CNN block residual outputs (pwconv2 is the final projection in each block)
-        for stage in self.encoder.stages:
-            for block in stage.blocks:
-                if hasattr(block, 'pwconv2'):
-                    with torch.no_grad():
-                        block.pwconv2.weight.mul_(residual_scale)
-                        if block.pwconv2.bias is not None:
-                            block.pwconv2.bias.mul_(residual_scale)
-
-        # Scale slot attention residual outputs
-        with torch.no_grad():
-            # Cross-attention output projection
-            if hasattr(self.slot_attention, 'cross_attn') and hasattr(self.slot_attention.cross_attn, 'out_proj'):
-                self.slot_attention.cross_attn.out_proj.weight.mul_(residual_scale)
-                if self.slot_attention.cross_attn.out_proj.bias is not None:
-                    self.slot_attention.cross_attn.out_proj.bias.mul_(residual_scale)
-
-            # FFN output projection (w3 in SwiGLU is the final output)
-            if hasattr(self.slot_attention, 'ffn') and hasattr(self.slot_attention.ffn, 'w3'):
-                self.slot_attention.ffn.w3.weight.mul_(residual_scale)
-                if self.slot_attention.ffn.w3.bias is not None:
-                    self.slot_attention.ffn.w3.bias.mul_(residual_scale)
-
     def _init_weights(self, module):
         """Initialize weights following modern best practices"""
         if isinstance(module, (nn.Conv2d, nn.Linear)):
-            nn.init.trunc_normal_(module.weight, std=0.02)
+            # Scale initialization for large output layers (e.g., classifier)
+            if isinstance(module, nn.Linear) and module.out_features >= 256:
+                # Use output dimension scaling for better gradient stability
+                std = 0.02 / math.sqrt(module.out_features)
+                nn.init.trunc_normal_(module.weight, std=std)
+            else:
+                nn.init.trunc_normal_(module.weight, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, (nn.LayerNorm, nn.BatchNorm2d)):
@@ -603,8 +584,8 @@ class ImageTextSlotModel(nn.Module):
         # 2. Project to slot dimension
         memory = self.projection(cnn_features)  # (B, 256, 320)
 
-        # 3. Broadcast slot queries and apply cross-attention
-        slot_queries = self.slot_queries.expand(B, -1, -1)  # (B, 1024, 320)
+        # 3. Broadcast slot queries with positional embeddings and apply cross-attention
+        slot_queries = (self.slot_queries + self.slot_pos_embed).expand(B, -1, -1)  # (B, 1024, 320)
         slot_features = self.slot_attention(slot_queries, memory)  # (B, 1024, 320)
 
         # 4. Classification head (with pre-normalization for stability)
@@ -716,7 +697,7 @@ class ImageTextSlotModel(nn.Module):
         # 1. Encode image through all components
         cnn_features = self.encoder(pixel_values)
         memory = self.projection(cnn_features)
-        slot_queries = self.slot_queries.expand(B, -1, -1)
+        slot_queries = (self.slot_queries + self.slot_pos_embed).expand(B, -1, -1)
         slot_features = self.slot_attention(slot_queries, memory)
         slot_features_normed = self.pre_classifier_norm(slot_features)
         logits = self.classifier(slot_features_normed)  # (B, 1024, 512)

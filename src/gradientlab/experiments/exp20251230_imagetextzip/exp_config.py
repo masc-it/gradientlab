@@ -24,7 +24,7 @@ class ExpConfig(BaseModel):
     exp_dir: Path = exp_dir
     num_epochs: int = 20
     min_lr: float = 2e-5
-    max_lr: float = 1e-4
+    max_lr: float = 8e-5
     warmup_ratio: float = 0.05
     num_workers: int = 4
     weight_decay: float = 1e-3
