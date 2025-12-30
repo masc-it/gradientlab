@@ -627,7 +627,8 @@ class FlashMHA(nn.Module):
     """MHA implemented via SDPA (FlashAttention when eligible)."""
 
     def __init__(
-        self, dim: int, num_heads: int, dropout: float = 0.0, force_flash: bool = False
+        self, dim: int, num_heads: int, dropout: float = 0.0, force_flash: bool = False,
+        use_alibi: bool = False, alibi_max_positions: int = 4096
     ):
         super().__init__()
         self.dim = dim
@@ -642,6 +643,114 @@ class FlashMHA(nn.Module):
         self.out_proj = nn.Linear(dim, dim, bias=True)
         self.dropout = float(dropout)
 
+        self.use_alibi = use_alibi
+        if self.use_alibi:
+            self._init_alibi_biases(alibi_max_positions)
+
+    def _init_alibi_biases(self, max_positions: int):
+        """
+        Pre-compute ALiBi slopes and bias matrix.
+
+        ALiBi uses slopes: m_h = 2^(-8h/H) for head h (0-indexed).
+        Bias for position (i,j) = -m_h * |i - j|
+        For causal attention, we only need lower triangular part.
+        """
+        # Compute per-head slopes: m_h = 2^(-8h/H)
+        # Shape: (num_heads,)
+        slopes = torch.pow(
+            2.0,
+            -8.0 * torch.arange(1, self.num_heads + 1, dtype=torch.float32) / self.num_heads
+        )
+
+        # Pre-compute relative position matrix: |i - j|
+        # For causal attention, we need positions [0, max_positions)
+        positions = torch.arange(max_positions, dtype=torch.float32)
+        # Create matrix where element [i, j] = |i - j|
+        # Shape: (max_positions, max_positions)
+        relative_positions = torch.abs(positions[:, None] - positions[None, :])
+
+        # Apply slopes to get biases per head
+        # Shape: (num_heads, max_positions, max_positions)
+        # bias[h, i, j] = -slopes[h] * |i - j|
+        alibi_biases = -slopes[:, None, None] * relative_positions[None, :, :]
+
+        # For causal attention, mask out future positions (set to -inf)
+        # This creates a lower-triangular pattern
+        causal_mask = torch.triu(torch.ones(max_positions, max_positions, dtype=torch.bool), diagonal=1)
+        alibi_biases_causal = alibi_biases.clone()
+        alibi_biases_causal[:, causal_mask] = float('-inf')
+
+        # Register as buffers (moved to device automatically, not trained)
+        # Note: persistent=False means they won't be saved in state_dict
+        self.register_buffer("alibi_slopes", slopes, persistent=False)
+        self.register_buffer("alibi_biases_causal", alibi_biases_causal, persistent=False)
+        self.register_buffer("alibi_biases_non_causal", alibi_biases, persistent=False)
+        self.alibi_max_positions = max_positions
+
+    def _get_alibi_bias(
+        self,
+        seq_len_q: int,
+        seq_len_k: int,
+        is_causal: bool,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """
+        Get ALiBi bias for given sequence lengths.
+
+        Args:
+            seq_len_q: Query sequence length
+            seq_len_k: Key sequence length (may differ in cross-attention)
+            is_causal: Whether this is causal attention
+            device: Target device
+
+        Returns:
+            Bias tensor of shape (1, num_heads, seq_len_q, seq_len_k) or None
+        """
+        if not self.use_alibi:
+            return None
+
+        # For self-attention, seq_len_q == seq_len_k
+        # For cross-attention, ALiBi should NOT be used
+        if seq_len_q != seq_len_k:
+            # This is cross-attention, no ALiBi
+            return None
+
+        # Check if we need to recompute (sequence too long)
+        if seq_len_q > self.alibi_max_positions:
+            # Fall back to on-the-fly computation for very long sequences
+            return self._compute_alibi_bias_dynamic(seq_len_q, is_causal, device)
+
+        # Slice pre-computed biases
+        if is_causal:
+            bias = self.alibi_biases_causal[:, :seq_len_q, :seq_len_k]
+        else:
+            bias = self.alibi_biases_non_causal[:, :seq_len_q, :seq_len_k]
+
+        # Add batch dimension: (num_heads, L, L) -> (1, num_heads, L, L)
+        return bias.unsqueeze(0)
+
+    def _compute_alibi_bias_dynamic(
+        self,
+        seq_len: int,
+        is_causal: bool,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """
+        Dynamically compute ALiBi bias for sequences longer than cached length.
+        This is a fallback for very long sequences.
+        """
+        positions = torch.arange(seq_len, dtype=torch.float32, device=device)
+        relative_positions = torch.abs(positions[:, None] - positions[None, :])
+
+        slopes = self.alibi_slopes.to(device)
+        biases = -slopes[:, None, None] * relative_positions[None, :, :]
+
+        if is_causal:
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=device), diagonal=1)
+            biases[:, causal_mask] = float('-inf')
+
+        return biases.unsqueeze(0)  # (1, num_heads, L, L)
+
     def _sdpa(
         self,
         q: torch.Tensor,
@@ -650,8 +759,46 @@ class FlashMHA(nn.Module):
         *,
         attn_mask: Optional[torch.Tensor],
         is_causal: bool,
+        alibi_bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        """
+        Scaled dot-product attention with optional ALiBi biases.
+
+        Args:
+            q, k, v: Query, key, value tensors (B, num_heads, L, head_dim)
+            attn_mask: Optional boolean or float attention mask
+            is_causal: Whether to apply causal masking
+            alibi_bias: Optional ALiBi bias (1, num_heads, L_q, L_k) or (B, num_heads, L_q, L_k)
+        """
         dropout_p = self.dropout if self.training else 0.0
+
+        # Merge ALiBi bias with existing attention mask
+        if alibi_bias is not None:
+            if attn_mask is not None:
+                # Combine masks: both must be broadcastable
+                # attn_mask is typically (B, 1, L, L) boolean or float
+                # alibi_bias is (1, num_heads, L, L)
+
+                # Convert boolean mask to float if needed
+                if attn_mask.dtype == torch.bool:
+                    # True = can attend, False = cannot attend
+                    # Convert to additive mask: False -> -inf, True -> 0.0
+                    float_mask = torch.zeros_like(attn_mask, dtype=q.dtype)
+                    float_mask.masked_fill_(~attn_mask, float('-inf'))
+                    combined_mask = float_mask + alibi_bias
+                else:
+                    # Already float, just add
+                    combined_mask = attn_mask + alibi_bias
+            else:
+                combined_mask = alibi_bias
+
+            # When using explicit mask, disable is_causal flag
+            # (the mask already encodes causality through -inf values)
+            use_causal = False
+        else:
+            combined_mask = attn_mask
+            use_causal = is_causal
+
         ctx = (
             sdpa_kernel(SDPBackend.FLASH_ATTENTION)
             if self.force_flash
@@ -665,7 +812,7 @@ class FlashMHA(nn.Module):
         )
         with ctx:
             return F.scaled_dot_product_attention(
-                q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal
+                q, k, v, attn_mask=combined_mask, dropout_p=dropout_p, is_causal=use_causal
             )
 
     def forward(
@@ -701,6 +848,8 @@ class FlashMHA(nn.Module):
             k = self.k_proj(x_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
             v = self.v_proj(x_kv).view(B, S, self.num_heads, self.head_dim).transpose(1, 2)
         
+        # Handle KV caching
+        actual_is_causal = is_causal
         if kv_cache is not None:
             k_key, v_key = f"{cache_prefix}_k", f"{cache_prefix}_v"
             if k_key in kv_cache and v_key in kv_cache:
@@ -709,9 +858,18 @@ class FlashMHA(nn.Module):
             kv_cache[k_key] = k
             kv_cache[v_key] = v
             # With incremental decoding and no future keys, causal masking is unnecessary.
-            is_causal = False
+            actual_is_causal = False
 
-        out = self._sdpa(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
+        # Generate ALiBi bias
+        # Note: k.shape[2] is the actual key sequence length after caching
+        alibi_bias = self._get_alibi_bias(
+            seq_len_q=q.shape[2],  # Current query length (usually 1 during generation)
+            seq_len_k=k.shape[2],  # Key length (grows with cache)
+            is_causal=actual_is_causal,
+            device=q.device,
+        )
+
+        out = self._sdpa(q, k, v, attn_mask=attn_mask, is_causal=actual_is_causal, alibi_bias=alibi_bias)
         out = out.transpose(1, 2).contiguous().view(B, L, D)
         return self.out_proj(out), kv_cache
 
@@ -725,17 +883,21 @@ class DecoderBlock(nn.Module):
         dropout: float = 0.0,
         drop_path: float = 0.0,
         force_flash: bool = False,
+        use_alibi: bool = False,
+        alibi_max_positions: int = 4096,
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.self_attn = FlashMHA(
-            dim, num_heads, dropout=dropout, force_flash=force_flash
+            dim, num_heads, dropout=dropout, force_flash=force_flash,
+            use_alibi=use_alibi, alibi_max_positions=alibi_max_positions
         )
         self.dp1 = DropPath(drop_path)
 
         self.norm2 = nn.LayerNorm(dim)
         self.cross_attn = FlashMHA(
-            dim, num_heads, dropout=dropout, force_flash=force_flash
+            dim, num_heads, dropout=dropout, force_flash=force_flash,
+            use_alibi=False  # Never use ALiBi for cross-attention
         )
         self.dp2 = DropPath(drop_path)
 
@@ -786,6 +948,8 @@ class DecoderConfig:
     max_seq_len: int = 256
     force_flash: bool = False
     tie_embeddings: bool = True
+    use_alibi: bool = False
+    alibi_max_positions: int = 4096
 
 
 class TransformerDecoder(nn.Module):
@@ -806,6 +970,8 @@ class TransformerDecoder(nn.Module):
                     dropout=cfg.dropout,
                     drop_path=dpr[i],
                     force_flash=cfg.force_flash,
+                    use_alibi=cfg.use_alibi,
+                    alibi_max_positions=cfg.alibi_max_positions,
                 )
                 for i in range(cfg.n_layers)
             ]
@@ -865,7 +1031,7 @@ class TransformerDecoder(nn.Module):
         pos_offset: int = 0,
         cross_kv_list: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None
     ) -> Tuple[torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
-        B, T = input_ids.shape
+        # B, T = input_ids.shape
         #assert pos_offset + T <= self.cfg.max_seq_len, "position exceeds max_seq_len"
 
         """ pos = (

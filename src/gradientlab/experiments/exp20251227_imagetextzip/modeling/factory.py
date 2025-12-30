@@ -11,7 +11,7 @@ from gradientlab.tokenizers.byte_tokenizer import byte_tokenizer
 
 class GPTFactory:
     @staticmethod
-    def build_5m(resume_from: str | None = None):
+    def build_5m(resume_from: str | None = None, use_alibi: bool = True):
         tokenizer = byte_tokenizer()
 
         cfg = ModelConfig(
@@ -37,6 +37,8 @@ class GPTFactory:
                 force_flash=False,
                 dropout=0.1,
                 drop_path=0.0,
+                use_alibi=use_alibi,
+                alibi_max_positions=8192,  # 2x max_seq_len for safety
             ),
         )
 
@@ -47,7 +49,7 @@ class GPTFactory:
         return model, tokenizer, cfg
     
     @staticmethod
-    def build_8m(resume_from: str | None = None):
+    def build_8m(resume_from: str | None = None, use_alibi: bool = True):
         tokenizer = byte_tokenizer()
 
         cfg = ModelConfig(
@@ -56,8 +58,8 @@ class GPTFactory:
             encoder=SwinEncoderConfig(
                 patch_size=8,
                 embed_dim=32,
-                depths=(2, 2, 2, 4),
-                num_heads=(2, 2, 4, 4),
+                depths=(2, 2, 2, 2),
+                num_heads=(2, 2, 4, 8),
                 drop=0.0,
                 attn_drop=0.0,
                 drop_path=0.1,
@@ -73,6 +75,8 @@ class GPTFactory:
                 force_flash=False,
                 dropout=0.0,
                 drop_path=0.0,
+                use_alibi=use_alibi,
+                alibi_max_positions=8192,  # 2x max_seq_len for safety
             ),
         )
 
