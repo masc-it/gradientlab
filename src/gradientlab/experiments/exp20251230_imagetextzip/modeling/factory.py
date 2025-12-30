@@ -9,6 +9,12 @@ from .model import (
     SequenceCounterConfig,
     ImageTextSlotModel,
 )
+from .model_vit import (
+    ModelViTConfig,
+    ViTEncoderConfig,
+    SequenceCounterConfig as SequenceCounterViTConfig,
+    ImageTextSlotViTModel,
+)
 
 
 class ModelFactory:
@@ -71,6 +77,70 @@ class ModelFactory:
 
         # Instantiate model
         model = ImageTextSlotModel(model_cfg)
+
+        # Load checkpoint if resuming
+        if resume_from is not None:
+            ckpt_path = Path(resume_from) / "model.pt"
+            if ckpt_path.exists():
+                state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+                model.load_state_dict(state_dict)
+                print(f"Loaded checkpoint from {ckpt_path}")
+            else:
+                print(f"Warning: Checkpoint not found at {ckpt_path}, starting from scratch")
+
+        return model, tokenizer, model_cfg
+
+    @staticmethod
+    def build_vit_5m(resume_from: str | None = None):
+        """
+        Build 5M parameter ImageTextSlot model with ViT encoder.
+
+        Args:
+            resume_from: Optional path to checkpoint directory to resume from
+
+        Returns:
+            Tuple of (model, tokenizer, cfg)
+        """
+        # Create tokenizer
+        tokenizer = byte_tokenizer()
+        pad_token_id = tokenizer.pad_token_id
+        assert isinstance(pad_token_id, int)
+
+        # Build ViT encoder config
+        # patch_size=8 gives 16x16=256 patches for 128x128 images
+        encoder_cfg = ViTEncoderConfig(
+            in_channels=1,
+            image_size=128,
+            patch_size=8,
+            d_model=256,
+            num_heads=8,
+            num_layers=6,
+            mlp_ratio=4,
+            dropout=0.1,
+        )
+
+        # Build sequence counter config
+        counter_cfg = SequenceCounterViTConfig(
+            d_model=256,
+            hidden_dim=128,
+            dropout=0.1,
+        )
+
+        # Build main model config
+        # 256 patches * 4 chars_per_patch = 1024 slots
+        model_cfg = ModelViTConfig(
+            encoder=encoder_cfg,
+            counter=counter_cfg,
+            vocab_size=512,
+            pad_token_id=pad_token_id,
+            num_slots=1024,
+            chars_per_patch=4,
+            label_smoothing=0.01,
+            counter_loss_weight=0.1,
+        )
+
+        # Instantiate model
+        model = ImageTextSlotViTModel(model_cfg)
 
         # Load checkpoint if resuming
         if resume_from is not None:

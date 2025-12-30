@@ -15,7 +15,7 @@ from gradientlab.logging_utils.log_model_params import pretty_print_model
 def main():
     print("=== START TRAINING ===")
     exp_cfg = ExpConfig()
-    model, tokenizer, model_cfg = ModelFactory.build_5m(exp_cfg.resume_from)
+    model, tokenizer, model_cfg = ModelFactory.build_vit_5m(exp_cfg.resume_from)
 
     print(json.dumps(model_cfg.model_dump(), indent=2) + "\n")
     pretty_print_model(model)

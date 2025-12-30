@@ -114,9 +114,9 @@ class Trainer:
                 }
                 pbar.set_postfix(
                     {
-                        "loss": metrics["loss"],
                         "ce": metrics["loss_ce"],
                         "cnt": metrics["loss_count"],
+                        "norm": metrics["norm"],
                         "step": f"{i}/{self.dl_len}",
                     }
                 )
