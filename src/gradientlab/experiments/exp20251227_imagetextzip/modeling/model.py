@@ -164,7 +164,7 @@ class WindowAttentionV2(nn.Module):
     
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, std=0.02)
+            nn.init.trunc_normal_(module.weight, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
@@ -610,8 +610,6 @@ class SwinEncoder(nn.Module):
 
         self.norm = nn.LayerNorm(dim)
         self.out_dim = dim
-        for stage in self.stages:
-            stage._init_respostnorm()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, H, W = self.patch_embed(x)
@@ -619,6 +617,10 @@ class SwinEncoder(nn.Module):
         for stage in self.stages:
             x, H, W = stage(x, H, W)
         return self.norm(x)  # (B, S, C)
+
+    def init_respostnorm(self) -> None:
+        for stage in self.stages:
+            stage._init_respostnorm()
 
 
 class FlashMHA(nn.Module):
@@ -929,6 +931,7 @@ class SwinImageToText(nn.Module):
             else nn.Identity()
         )
         self.apply(self._init_weights)
+        self.encoder.init_respostnorm()
         if cfg.decoder.tie_embeddings:
             self.decoder.lm_head.weight = self.decoder.tok_emb.weight
 
@@ -1012,17 +1015,14 @@ class SwinImageToText(nn.Module):
         return tokens
 
     def _init_weights(self, module):
-        std = 0.02
-        if isinstance(module, WindowAttentionV2):
-            # Do NOT re-init relative_position_bias_table or cpb_mlp here
-            return
-        
         if isinstance(module, nn.Embedding):
-            nn.init.normal_(
-                module.weight, mean=0.0, std=1 / math.sqrt(module.embedding_dim)
-            )
-            module.weight.data[self.cfg.pad_token_id].zero_()
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, std=std)
+            nn.init.trunc_normal_(module.weight, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.zeros_(module.bias)
+            nn.init.ones_(module.weight)
