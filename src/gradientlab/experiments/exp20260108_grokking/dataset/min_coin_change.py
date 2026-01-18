@@ -195,7 +195,8 @@ def generate_min_coin_change_dataset(
 
 if __name__ == "__main__":
     # Default save path
-    default_path = Path(__file__).parent.parent / "data" / "min_coin_change"
+    #default_path = Path(__file__).parent.parent / "data" / "min_coin_change"
+    default_path = "/media/mascit/Lexar/datasets/min_coin_change/"
 
     # Generate dataset with different configurations
     # Example 1: Simple - just predict the count
@@ -219,7 +220,7 @@ if __name__ == "__main__":
         ],
         include_coins_in_input=True,
         output_type="count",
-        train_split=0.15,
+        train_split=0.2,
     )
     
     """ generate_min_coin_change_dataset(

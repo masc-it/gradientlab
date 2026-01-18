@@ -13,7 +13,7 @@ from pydantic import BaseModel
 if sys.platform == "darwin":
     ds_name = str(Path(__file__).parent / "data" / "min_coin_change")
 else:
-    ds_name = "/workspace/data/date_to_iso"
+    ds_name = "/media/mascit/Lexar/datasets/min_coin_change/"
 
 # Create experiment directory
 exp_dir = Path(__file__).parent / "data"
@@ -38,13 +38,13 @@ class ExpConfig(BaseModel):
     num_workers: int = 4
 
     # Training
-    num_epochs: int = 40000
-    device: str = "mps"
+    num_epochs: int = 20000
+    device: str = "cuda"
 
     # Optimizer
     min_lr: float = 1e-4
     max_lr: float = 1e-3
-    weight_decay: float = 0.8
+    weight_decay: float = 1.0
     warmup_ratio: float = 0.05
 
     # Logging & Checkpointing
@@ -53,7 +53,7 @@ class ExpConfig(BaseModel):
     exp_dir: Path = exp_dir
     log_steps: int = 10  # Log training metrics every N steps
     save_steps: int = 500  # Periodic sampling (currently unused)
-    eval_every_n_epochs: int = 100  # Run full eval every N epochs (includes generation + autoregressive accuracy)
+    eval_every_n_epochs: int = 200  # Run full eval every N epochs (includes generation + autoregressive accuracy)
 
     # Resume
     resume_from: Optional[str] = None
